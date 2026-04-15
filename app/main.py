@@ -8,7 +8,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel, Field, field_validator
-import uuid, datetime, datetime as _dt, httpx, os, re, asyncpg, json, asyncio, logging, time, hashlib, secrets
+import uuid, datetime; import datetime as _dt; import httpx, os, re, asyncpg, json, asyncio, logging, time, hashlib, secrets
 
 
 # --- Sports Module ---
@@ -32,6 +32,7 @@ from app.fantasy import (
 )
 
 from app.provenance.ipr import ensure_table as ensure_ipr_table
+from app.billing import router as billing_router, ensure_billing_tables
 from app.provenance.ipr import (
     validate_ipr_input, insert_ipr, get_ipr,
     get_iprs_by_agent, get_ipr_stats, submit_outcome,
@@ -206,6 +207,14 @@ async def startup():
         except Exception as e:
             print(f"IPR table warning: {e}")
 
+
+        try:
+            async with db_pool.acquire() as conn:
+                await ensure_billing_tables(conn)
+            await ensure_caep_table(conn)
+            print("Billing tables ready")
+        except Exception as e:
+            print(f"Billing tables warning: {e}")
     # Start settlement scheduler
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     global _settlement_scheduler
@@ -1000,6 +1009,18 @@ async def get_trust_score(did: str):
     from app.swarm.trust_score import compute_phase2_score, score_to_grade
     from app.anomaly import compute_flags
     async with db_pool.acquire() as conn:
+        # Revoked agents return score 0 (ZeroID Feature 2)
+        _rev = await conn.fetchrow(
+            "SELECT revoked_at, revocation_reason FROM agents WHERE did = $1", did
+        )
+        if _rev and _rev["revoked_at"]:
+            return {
+                "did": did, "trust_score": 0.0, "grade": "REVOKED",
+                "breakdown": {"revoked": True, "reason": _rev["revocation_reason"]},
+                "endorser_count": 0, "withheld": False,
+                "flags": ["revoked"], "flag_count": 1,
+                "computed_at": None, "cache_valid_until": None,
+            }
         try:
             result = await compute_phase2_score(did, conn)
             cached = await conn.fetchrow(
@@ -1019,6 +1040,7 @@ async def get_trust_score(did: str):
                     "prediction_bonus": result.get("prediction_bonus", 0.0),
                     "wallet_bonus": result.get("wallet_bonus", 0.0),
                     "sybil_penalty": result["sybil_penalty"],
+                    "agent_class_modifier": result.get("agent_class_modifier", 0.0),
                     "computation_method": result["computation_method"],
                 },
                 "endorser_count": result["endorser_count"],
@@ -1350,13 +1372,16 @@ async def resolve_did(request: Request, did: str):
         if db_pool:
             async with db_pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT did, display_name, platform, created_at, wallet_address, wallet_chain, wallet_bound_at FROM agents WHERE did = $1", did
+                    "SELECT did, display_name, platform, created_at, wallet_address, wallet_chain, wallet_bound_at, public_key_hex, key_anchor_tx, key_anchor_block FROM agents WHERE did = $1", did
                 )
                 if row:
                     await update_last_seen(did)
                 if row:
                     doc = {
-                        "@context": "https://www.w3.org/ns/did/v1",
+                        "@context": [
+                            "https://www.w3.org/ns/did/v1",
+                            "https://w3id.org/security/suites/ed25519-2020/v1"
+                        ],
                         "id": row["did"],
                         "controller": "did:web:api.moltrust.ch",
                         "metadata": {
@@ -1366,11 +1391,27 @@ async def resolve_did(request: Request, did: str):
                             "trust_provider": "MolTrust"
                         }
                     }
+                    if row["public_key_hex"]:
+                        key_id = f"{row['did']}#key-1"
+                        doc["verificationMethod"] = [{
+                            "id": key_id,
+                            "type": "Ed25519VerificationKey2020",
+                            "controller": row["did"],
+                            "publicKeyHex": row["public_key_hex"]
+                        }]
+                        doc["authentication"] = [key_id]
+                        doc["assertionMethod"] = [key_id]
+                        if row["key_anchor_tx"]:
+                            doc["metadata"]["keyAnchor"] = {
+                                "chain": "base",
+                                "tx": row["key_anchor_tx"],
+                                "block": row["key_anchor_block"],
+                            }
                     if row["wallet_address"]:
                         chain = row["wallet_chain"] or "base"
                         svc_type = "SolanaPaymentService" if chain == "solana" else "PaymentService"
                         currency = "USDC" if chain != "solana" else "SOL"
-                        doc["service"] = [{
+                        doc.setdefault("service", []).append({
                             "id": f"{row['did']}#payment",
                             "type": svc_type,
                             "serviceEndpoint": {
@@ -1379,12 +1420,37 @@ async def resolve_did(request: Request, did: str):
                                 "currency": currency,
                                 "bound_at": row["wallet_bound_at"].isoformat() + "Z" if row["wallet_bound_at"] else None,
                             }
-                        }]
+                        })
                     return doc
         raise HTTPException(404, "DID not found")
     if did.startswith("did:web:"):
         raise HTTPException(501, "External did:web resolution not yet supported")
     raise HTTPException(400, "Unsupported DID method")
+
+@app.get("/identity/key/{did:path}")
+@limiter.limit("30/minute")
+async def get_agent_public_key(request: Request, did: str):
+    """Return public key + on-chain anchor info for a DID."""
+    if not DID_PATTERN.match(did):
+        raise HTTPException(400, "Invalid DID format")
+    if not db_pool:
+        raise HTTPException(503, "Database unavailable")
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT did, public_key_hex, key_anchor_tx, key_anchor_block FROM agents WHERE did = $1", did
+        )
+    if not row:
+        raise HTTPException(404, "DID not found")
+    if not row["public_key_hex"]:
+        raise HTTPException(404, "No public key registered for this DID")
+    return {
+        "did": row["did"],
+        "public_key_hex": row["public_key_hex"],
+        "key_anchor_tx": row["key_anchor_tx"],
+        "key_anchor_block": row["key_anchor_block"],
+        "anchor_verified": row["key_anchor_tx"] is not None
+    }
+
 # --- DID-Wallet Binding Endpoints ---
 
 class WalletBindRequest(BaseModel):
@@ -2018,6 +2084,194 @@ class BatchRegisterRequest(BaseModel):
         return v
 
 
+
+# ── CAEP events table setup ──────────────────────────────────────────────────
+async def ensure_caep_table(conn):
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS caep_events (
+            id SERIAL PRIMARY KEY,
+            did VARCHAR(40) NOT NULL,
+            event_type VARCHAR(50) NOT NULL,
+            payload JSONB,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    try:
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_caep_did ON caep_events(did)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_caep_type ON caep_events(event_type)")
+    except Exception:
+        pass
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AGENT TYPE CLASSIFICATION (ZeroID Feature 1)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+VALID_AGENT_CLASSES = ("orchestrator", "autonomous", "human_initiated", "copilot")
+
+GOVERNANCE_RULES = {
+    "orchestrator": {
+        "cascade_revocation_priority": "critical",
+        "min_trust_score_to_delegate": 60,
+        "review_frequency_days": 30,
+        "description": "Delegates tasks to sub-agents, plans workflows",
+    },
+    "autonomous": {
+        "cascade_revocation_priority": "high",
+        "min_trust_score_required": 50,
+        "review_frequency_days": 90,
+        "description": "Fully autonomous, no human in the loop",
+    },
+    "human_initiated": {
+        "cascade_revocation_priority": "medium",
+        "min_trust_score_required": 30,
+        "review_frequency_days": 180,
+        "description": "Human-triggered, then runs autonomously",
+    },
+    "copilot": {
+        "cascade_revocation_priority": "low",
+        "min_trust_score_required": 0,
+        "review_frequency_days": 365,
+        "description": "Human stays active in the loop",
+    },
+}
+
+AGENT_CLASS_TRUST_MODIFIER = {
+    "orchestrator": 5.0,
+    "autonomous": 0.0,
+    "human_initiated": 0.0,
+    "copilot": -10.0,
+}
+
+
+class AgentClassRequest(BaseModel):
+    agent_class: str = Field(..., description="One of: orchestrator, autonomous, human_initiated, copilot")
+    agent_framework: str | None = Field(None, max_length=100, description="e.g. langgraph, crewai, autogen")
+    agent_version: str | None = Field(None, max_length=50)
+    publisher: str | None = Field(None, max_length=255)
+
+    @field_validator("agent_class")
+    @classmethod
+    def validate_agent_class(cls, v):
+        if v not in VALID_AGENT_CLASSES:
+            raise ValueError(f"Invalid agent_class. Must be one of: {VALID_AGENT_CLASSES}")
+        return v
+
+
+@app.post("/identity/agent-type/{did}")
+@limiter.limit("30/minute")
+async def set_agent_class(request: Request, did: str, body: AgentClassRequest, api_key: str = Depends(verify_api_key)):
+    """Set or update the agent classification and governance tier."""
+    if not DID_PATTERN.match(did):
+        raise HTTPException(status_code=400, detail="Invalid DID format")
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        agent = await conn.fetchrow("SELECT did, agent_class FROM agents WHERE did = $1", did)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        old_class = agent["agent_class"]
+
+        await conn.execute(
+            """UPDATE agents
+               SET agent_class = $1,
+                   agent_framework = $2,
+                   agent_version = $3,
+                   publisher = $4,
+                   agent_class_updated_at = NOW()
+               WHERE did = $5""",
+            body.agent_class, body.agent_framework, body.agent_version,
+            body.publisher, did,
+        )
+
+        # Invalidate trust score cache so modifier takes effect
+        await conn.execute(
+            "DELETE FROM trust_score_cache WHERE did = $1", did
+        )
+
+        # CAEP event on type change
+        caep_event = None
+        if old_class != body.agent_class:
+            caep_event = {
+                "type": "agent_class_changed",
+                "did": did,
+                "old_class": old_class,
+                "new_class": body.agent_class,
+                "governance": GOVERNANCE_RULES[body.agent_class],
+                "trust_modifier": AGENT_CLASS_TRUST_MODIFIER[body.agent_class],
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            }
+            # Log CAEP event
+            logger.info(
+                "CAEP agent_class_changed: %s %s -> %s",
+                did, old_class, body.agent_class,
+            )
+            # Store in caep_events table if it exists
+            try:
+                await conn.execute(
+                    """INSERT INTO caep_events (did, event_type, payload, created_at)
+                       VALUES ($1, $2, $3, NOW())""",
+                    did, "agent_class_changed", json.dumps(caep_event),
+                )
+            except Exception:
+                pass  # Table may not exist yet
+
+    return {
+        "did": did,
+        "agent_class": body.agent_class,
+        "governance": GOVERNANCE_RULES[body.agent_class],
+        "trust_modifier": AGENT_CLASS_TRUST_MODIFIER[body.agent_class],
+        "caep_event": caep_event,
+    }
+
+
+@app.get("/identity/agent-type/{did}")
+@limiter.limit("60/minute")
+async def get_agent_class(request: Request, did: str):
+    """Read agent classification and governance rules."""
+    if not DID_PATTERN.match(did):
+        raise HTTPException(status_code=400, detail="Invalid DID format")
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        agent = await conn.fetchrow(
+            """SELECT did, display_name, agent_class, agent_framework,
+                      agent_version, publisher, agent_class_updated_at
+               FROM agents WHERE did = $1""",
+            did,
+        )
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+    ac = agent["agent_class"] or "autonomous"
+    return {
+        "did": did,
+        "display_name": agent["display_name"],
+        "agent_class": ac,
+        "agent_framework": agent["agent_framework"],
+        "agent_version": agent["agent_version"],
+        "publisher": agent["publisher"],
+        "governance": GOVERNANCE_RULES.get(ac, GOVERNANCE_RULES["autonomous"]),
+        "trust_modifier": AGENT_CLASS_TRUST_MODIFIER.get(ac, 0.0),
+        "updated_at": agent["agent_class_updated_at"].isoformat() if agent["agent_class_updated_at"] else None,
+    }
+
+
+@app.get("/identity/agent-types")
+@limiter.limit("60/minute")
+async def list_agent_types(request: Request):
+    """List all available agent classifications with governance rules."""
+    return {
+        "types": {
+            k: {**v, "trust_modifier": AGENT_CLASS_TRUST_MODIFIER[k]}
+            for k, v in GOVERNANCE_RULES.items()
+        }
+    }
+
 @app.post("/identity/register-batch", tags=["Identity"])
 async def register_batch(request: Request):
     """Batch-register external agents with Merkle anchoring. Requires ADMIN_KEY."""
@@ -2227,6 +2481,25 @@ async def issue_vc(request: Request, body: IssueVCRequest, api_key: str = Depend
             except Exception as ipfs_err:
                 import logging
                 logging.getLogger("moltrust.ipfs").warning("IPFS publish failed: %s", ipfs_err)
+
+
+            # Track delegation relationship (ZeroID Feature 2)
+            if chain and len(chain) >= 2:
+                parent_did = chain[-2] if len(chain) >= 2 else None
+                if parent_did and DID_PATTERN.match(parent_did):
+                    try:
+                        await conn.execute(
+                            """INSERT INTO agent_delegations
+                               (parent_did, child_did, aae_id, credential_type, hop_depth, created_at)
+                               VALUES ($1, $2, $3, $4, $5, NOW())
+                               ON CONFLICT (parent_did, child_did, aae_id) DO NOTHING""",
+                            parent_did, body.subject_did,
+                            vc.get("id", vc["proof"]["proofValue"][:32]),
+                            body.credential_type,
+                            len(chain) - 1,
+                        )
+                    except Exception:
+                        pass  # Non-critical: don't break VC issuance
 
     await update_last_seen(body.subject_did)
     return vc
@@ -2578,6 +2851,8 @@ async def a2a_agent_card(request: Request):
                     "trust_score_endpoint": "https://api.moltrust.ch/skill/trust-score/{did}",
                     "min_score_header": "X-MolTrust-Min-Score",
                     "did_resolution": "https://api.moltrust.ch/identity/did/{did}",
+                    "agent_type_endpoint": "https://api.moltrust.ch/identity/agent-type/{did}",
+                    "agent_types": ["orchestrator", "autonomous", "human_initiated", "copilot"],
                 },
             }],
         },
@@ -2639,7 +2914,7 @@ async def a2a_trust_card(request: Request, did: str = Path(max_length=128)):
     if not db_pool:
         raise HTTPException(status_code=503, detail="Database unavailable")
     async with db_pool.acquire() as conn:
-        agent = await conn.fetchrow("SELECT display_name, platform, created_at, base_tx_hash FROM agents WHERE did = $1", did)
+        agent = await conn.fetchrow("SELECT display_name, platform, created_at, base_tx_hash, agent_class, agent_framework FROM agents WHERE did = $1", did)
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
         score = await conn.fetchrow("SELECT COALESCE(AVG(score),0) as avg, COUNT(*) as total FROM ratings WHERE to_did=$1", did)
@@ -2658,6 +2933,11 @@ async def a2a_trust_card(request: Request, did: str = Path(max_length=128)):
             "registeredAt": agent["created_at"].isoformat() if agent["created_at"] else None,
             "baseAnchor": agent["base_tx_hash"],
             "baseScanUrl": f"https://basescan.org/tx/{agent['base_tx_hash']}" if agent["base_tx_hash"] else None
+        },
+        "agent_classification": {
+            "agent_class": agent["agent_class"] or "autonomous",
+            "agent_framework": agent["agent_framework"],
+            "governance_tier": GOVERNANCE_RULES.get(agent["agent_class"] or "autonomous", GOVERNANCE_RULES["autonomous"]),
         },
         "capabilities": {
             "verifiableIdentity": True,
@@ -4026,6 +4306,450 @@ async def verify_delegation_chain_endpoint(request: Request, body: DelegationCha
     return {"valid": True, "depth": depth, "max_depth": 8}
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CASCADE REVOCATION (ZeroID Feature 2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class RevokeRequest(BaseModel):
+    reason: str = Field("manual_revocation", max_length=100)
+    cascade: bool = Field(False, description="Revoke all downstream delegated agents")
+
+
+@app.post("/identity/revoke/{did}")
+@limiter.limit("10/minute")
+async def revoke_agent(
+    request: Request,
+    did: str,
+    body: RevokeRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    """
+    Revoke an agent. With cascade=true, all downstream delegated agents
+    are also revoked (max 8 hops). Emits CAEP events.
+    """
+    if not DID_PATTERN.match(did):
+        raise HTTPException(status_code=400, detail="Invalid DID format")
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        # Verify caller is admin or agent owner
+        caller_did = await resolve_did_from_api_key(conn, api_key)
+        admin_key = request.headers.get("x-admin-key", "")
+        expected_admin = os.environ.get("ADMIN_KEY", "")
+        is_admin = expected_admin and admin_key == expected_admin
+
+        if caller_did != did and not is_admin:
+            raise HTTPException(403, "Not authorized to revoke this agent")
+
+        agent = await conn.fetchrow(
+            "SELECT did, display_name, revoked_at FROM agents WHERE did = $1", did
+        )
+        if not agent:
+            raise HTTPException(404, "Agent not found")
+        if agent["revoked_at"]:
+            raise HTTPException(409, "Agent already revoked")
+
+        # Collect all DIDs to revoke
+        revoked_dids = []
+        visited = set()
+
+        async def _cascade_revoke(target_did: str, depth: int = 0):
+            if depth > 8 or target_did in visited:
+                return
+            visited.add(target_did)
+
+            # Revoke the agent
+            await conn.execute(
+                "UPDATE agents SET revoked_at = NOW(), revocation_reason = $1 WHERE did = $2 AND revoked_at IS NULL",
+                body.reason, target_did,
+            )
+            revoked_dids.append({"did": target_did, "depth": depth})
+
+            # Invalidate trust score cache
+            await conn.execute(
+                "DELETE FROM trust_score_cache WHERE did = $1", target_did
+            )
+
+            # CAEP event
+            caep_payload = {
+                "type": "agent_revoked",
+                "did": target_did,
+                "reason": body.reason,
+                "cascade": body.cascade,
+                "cascade_depth": depth,
+                "revoked_by": did,
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            }
+            try:
+                await conn.execute(
+                    "INSERT INTO caep_events (did, event_type, payload, created_at) VALUES ($1, $2, $3, NOW())",
+                    target_did, "agent_revoked", json.dumps(caep_payload),
+                )
+            except Exception:
+                pass
+
+            # Fetch children BEFORE revoking delegation records
+            children_to_cascade = []
+            if body.cascade:
+                children_to_cascade = await conn.fetch(
+                    "SELECT child_did FROM agent_delegations WHERE parent_did = $1 AND revoked_at IS NULL",
+                    target_did,
+                )
+
+            # Revoke delegation records
+            await conn.execute(
+                "UPDATE agent_delegations SET revoked_at = NOW() WHERE (parent_did = $1 OR child_did = $1) AND revoked_at IS NULL",
+                target_did,
+            )
+
+            # Cascade to children
+            for child in children_to_cascade:
+                await _cascade_revoke(child["child_did"], depth + 1)
+
+        await _cascade_revoke(did)
+
+        logger.info(
+            "REVOKE %s cascade=%s affected=%d reason=%s",
+            did, body.cascade, len(revoked_dids), body.reason,
+        )
+
+    return {
+        "revoked": did,
+        "reason": body.reason,
+        "cascade": body.cascade,
+        "affected_agents": revoked_dids,
+        "count": len(revoked_dids),
+    }
+
+
+@app.post("/identity/unrevoke/{did}")
+@limiter.limit("10/minute")
+async def unrevoke_agent(
+    request: Request,
+    did: str,
+    api_key: str = Depends(verify_api_key),
+):
+    """Reinstate a revoked agent. Admin only."""
+    if not DID_PATTERN.match(did):
+        raise HTTPException(status_code=400, detail="Invalid DID format")
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    admin_key = request.headers.get("x-admin-key", "")
+    expected_admin = os.environ.get("ADMIN_KEY", "")
+    if not expected_admin or admin_key != expected_admin:
+        raise HTTPException(403, "Admin key required to unrevoke agents")
+
+    async with db_pool.acquire() as conn:
+        agent = await conn.fetchrow(
+            "SELECT did, revoked_at FROM agents WHERE did = $1", did
+        )
+        if not agent:
+            raise HTTPException(404, "Agent not found")
+        if not agent["revoked_at"]:
+            raise HTTPException(409, "Agent is not revoked")
+
+        await conn.execute(
+            "UPDATE agents SET revoked_at = NULL, revocation_reason = NULL WHERE did = $1",
+            did,
+        )
+        await conn.execute(
+            "DELETE FROM trust_score_cache WHERE did = $1", did
+        )
+
+        # CAEP event
+        try:
+            await conn.execute(
+                "INSERT INTO caep_events (did, event_type, payload, created_at) VALUES ($1, $2, $3, NOW())",
+                did, "agent_unrevoked",
+                json.dumps({"type": "agent_unrevoked", "did": did,
+                            "timestamp": datetime.datetime.utcnow().isoformat() + "Z"}),
+            )
+        except Exception:
+            pass
+
+    return {"did": did, "status": "reinstated"}
+
+
+@app.get("/identity/revocation-status/{did}")
+@limiter.limit("60/minute")
+async def revocation_status(request: Request, did: str):
+    """Check revocation status and downstream impact."""
+    if not DID_PATTERN.match(did):
+        raise HTTPException(status_code=400, detail="Invalid DID format")
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        agent = await conn.fetchrow(
+            "SELECT did, display_name, revoked_at, revocation_reason FROM agents WHERE did = $1",
+            did,
+        )
+        if not agent:
+            raise HTTPException(404, "Agent not found")
+
+        # Count downstream delegations
+        downstream = await conn.fetchval(
+            "SELECT COUNT(*) FROM agent_delegations WHERE parent_did = $1 AND revoked_at IS NULL",
+            did,
+        )
+
+    return {
+        "did": did,
+        "display_name": agent["display_name"],
+        "revoked": agent["revoked_at"] is not None,
+        "revoked_at": agent["revoked_at"].isoformat() if agent["revoked_at"] else None,
+        "revocation_reason": agent["revocation_reason"],
+        "downstream_delegations": downstream,
+    }
+
+
+@app.get("/identity/delegations/{did}")
+@limiter.limit("60/minute")
+async def get_delegations(request: Request, did: str):
+    """List all delegation relationships for an agent (parent and child)."""
+    if not DID_PATTERN.match(did):
+        raise HTTPException(status_code=400, detail="Invalid DID format")
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        delegated_to = await conn.fetch(
+            """SELECT child_did, aae_id, credential_type, hop_depth, created_at, revoked_at
+               FROM agent_delegations WHERE parent_did = $1
+               ORDER BY created_at DESC""",
+            did,
+        )
+        delegated_from = await conn.fetch(
+            """SELECT parent_did, aae_id, credential_type, hop_depth, created_at, revoked_at
+               FROM agent_delegations WHERE child_did = $1
+               ORDER BY created_at DESC""",
+            did,
+        )
+
+    return {
+        "did": did,
+        "delegated_to": [
+            {
+                "child_did": r["child_did"],
+                "aae_id": r["aae_id"],
+                "credential_type": r["credential_type"],
+                "hop_depth": r["hop_depth"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "revoked": r["revoked_at"] is not None,
+            }
+            for r in delegated_to
+        ],
+        "delegated_from": [
+            {
+                "parent_did": r["parent_did"],
+                "aae_id": r["aae_id"],
+                "credential_type": r["credential_type"],
+                "hop_depth": r["hop_depth"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "revoked": r["revoked_at"] is not None,
+            }
+            for r in delegated_from
+        ],
+        "total_delegated_to": len(delegated_to),
+        "total_delegated_from": len(delegated_from),
+    }
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SPIFFE BRIDGE (ZeroID Feature 3) — Lightweight SPIFFE ↔ MolTrust DID mapping
+# ═══════════════════════════════════════════════════════════════════════════════
+
+SPIFFE_URI_PATTERN = re.compile(r"^spiffe://[a-z0-9][a-z0-9.-]*(/[a-zA-Z0-9._~:@!$&'()*+,;=-]+)*$")
+
+
+class SpiffeBindRequest(BaseModel):
+    spiffe_uri: str = Field(..., max_length=512, description="SPIFFE URI, e.g. spiffe://moltrust.ch/agent/scanner")
+    did: str = Field(..., max_length=40, description="MolTrust DID to bind to")
+
+    @field_validator("spiffe_uri")
+    @classmethod
+    def validate_spiffe_uri(cls, v):
+        if not v.startswith("spiffe://"):
+            raise ValueError("SPIFFE URI must start with spiffe://")
+        return v
+
+
+@app.get("/identity/spiffe/{spiffe_uri:path}")
+@limiter.limit("60/minute")
+async def spiffe_lookup(request: Request, spiffe_uri: str):
+    """
+    Resolve a SPIFFE URI to a MolTrust DID with trust score and classification.
+    Lightweight bridge — full SVID/Workload API planned for Q3.
+    """
+    full_uri = spiffe_uri
+    if not full_uri.startswith("spiffe://"):
+        full_uri = "spiffe://" + full_uri
+
+    if not db_pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        binding = await conn.fetchrow(
+            "SELECT did, bound_by, created_at FROM spiffe_bindings WHERE spiffe_uri = $1",
+            full_uri,
+        )
+        if not binding:
+            raise HTTPException(404, f"No MolTrust DID bound to SPIFFE URI: {full_uri}")
+
+        did = binding["did"]
+
+        # Fetch agent info + classification
+        agent = await conn.fetchrow(
+            "SELECT display_name, agent_class, agent_framework, revoked_at FROM agents WHERE did = $1",
+            did,
+        )
+
+        # Fetch trust score from cache
+        trust_score = None
+        grade = None
+        if agent and agent["revoked_at"]:
+            trust_score = 0.0
+            grade = "REVOKED"
+        else:
+            cached = await conn.fetchrow(
+                "SELECT score FROM trust_score_cache WHERE did = $1", did
+            )
+            if cached and cached["score"] is not None:
+                from app.swarm.trust_score import score_to_grade
+                trust_score = cached["score"]
+                grade = score_to_grade(trust_score)
+
+    ac = (agent["agent_class"] if agent else None) or "autonomous"
+    return {
+        "spiffe_uri": full_uri,
+        "moltrust_did": did,
+        "display_name": agent["display_name"] if agent else None,
+        "trust_score": trust_score,
+        "grade": grade,
+        "agent_classification": {
+            "agent_class": ac,
+            "agent_framework": agent["agent_framework"] if agent else None,
+            "governance": GOVERNANCE_RULES.get(ac, GOVERNANCE_RULES["autonomous"]),
+        },
+        "revoked": bool(agent and agent["revoked_at"]),
+        "bound_by": binding["bound_by"],
+        "bound_at": binding["created_at"].isoformat() if binding["created_at"] else None,
+    }
+
+
+@app.post("/identity/spiffe/bind")
+@limiter.limit("10/minute")
+async def spiffe_bind(request: Request, body: SpiffeBindRequest, api_key: str = Depends(verify_api_key)):
+    """Bind a SPIFFE URI to an existing MolTrust DID."""
+    if not DID_PATTERN.match(body.did):
+        raise HTTPException(400, "Invalid DID format")
+    if not db_pool:
+        raise HTTPException(503, "Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        # Verify agent exists
+        agent = await conn.fetchrow("SELECT did FROM agents WHERE did = $1", body.did)
+        if not agent:
+            raise HTTPException(404, "Agent not found")
+
+        # Resolve caller
+        caller_did = await resolve_did_from_api_key(conn, api_key)
+
+        # Check for existing binding
+        existing = await conn.fetchrow(
+            "SELECT did FROM spiffe_bindings WHERE spiffe_uri = $1", body.spiffe_uri
+        )
+        if existing:
+            raise HTTPException(409, f"SPIFFE URI already bound to {existing['did']}")
+
+        await conn.execute(
+            "INSERT INTO spiffe_bindings (spiffe_uri, did, bound_by, created_at) VALUES ($1, $2, $3, NOW())",
+            body.spiffe_uri, body.did, caller_did,
+        )
+
+        # CAEP event
+        try:
+            await conn.execute(
+                "INSERT INTO caep_events (did, event_type, payload, created_at) VALUES ($1, $2, $3, NOW())",
+                body.did, "spiffe_bound",
+                json.dumps({"type": "spiffe_bound", "spiffe_uri": body.spiffe_uri,
+                            "did": body.did, "bound_by": caller_did,
+                            "timestamp": datetime.datetime.utcnow().isoformat() + "Z"}),
+            )
+        except Exception:
+            pass
+
+    logger.info("SPIFFE bind: %s -> %s by %s", body.spiffe_uri, body.did, caller_did)
+    return {"status": "bound", "spiffe_uri": body.spiffe_uri, "did": body.did}
+
+
+@app.delete("/identity/spiffe/bind/{spiffe_uri:path}")
+@limiter.limit("10/minute")
+async def spiffe_unbind(request: Request, spiffe_uri: str, api_key: str = Depends(verify_api_key)):
+    """Remove a SPIFFE binding. Admin only."""
+    full_uri = spiffe_uri
+    if not full_uri.startswith("spiffe://"):
+        full_uri = "spiffe://" + full_uri
+
+    admin_key = request.headers.get("x-admin-key", "")
+    expected_admin = os.environ.get("ADMIN_KEY", "")
+    if not expected_admin or admin_key != expected_admin:
+        raise HTTPException(403, "Admin key required to remove SPIFFE bindings")
+
+    if not db_pool:
+        raise HTTPException(503, "Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM spiffe_bindings WHERE spiffe_uri = $1", full_uri
+        )
+        if result == "DELETE 0":
+            raise HTTPException(404, f"No binding found for: {full_uri}")
+
+        # CAEP event
+        try:
+            await conn.execute(
+                "INSERT INTO caep_events (did, event_type, payload, created_at) VALUES ($1, $2, $3, NOW())",
+                "system", "spiffe_unbound",
+                json.dumps({"type": "spiffe_unbound", "spiffe_uri": full_uri,
+                            "timestamp": datetime.datetime.utcnow().isoformat() + "Z"}),
+            )
+        except Exception:
+            pass
+
+    return {"status": "unbound", "spiffe_uri": full_uri}
+
+
+@app.get("/identity/spiffe")
+@limiter.limit("30/minute")
+async def spiffe_list(request: Request, api_key: str = Depends(verify_api_key)):
+    """List all SPIFFE bindings. Requires API key."""
+    if not db_pool:
+        raise HTTPException(503, "Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT spiffe_uri, did, bound_by, created_at FROM spiffe_bindings ORDER BY created_at DESC LIMIT 100"
+        )
+
+    return {
+        "bindings": [
+            {
+                "spiffe_uri": r["spiffe_uri"],
+                "did": r["did"],
+                "bound_by": r["bound_by"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            }
+            for r in rows
+        ],
+        "total": len(rows),
+    }
+
+
 @app.post("/delegation/configure")
 @limiter.limit("10/minute")
 async def configure_delegation(request: Request, api_key: str = Depends(verify_api_key)):
@@ -4596,6 +5320,7 @@ async def ipr_admin_reanchor(request: Request):
 # BATCH REGISTRATION — /identity/register-batch
 # ═══════════════════════════════════════════════════════════════
 
+
 @app.post("/identity/register-batch", tags=["Identity"])
 @limiter.limit("5/minute")
 async def register_batch(request: Request):
@@ -4842,7 +5567,7 @@ async def dashboard_overview(request: Request):
         if cert_result.stdout:
             import email.utils
             exp_str = cert_result.stdout.decode().strip().split("=")[1]
-            from datetime import datetime as _dt
+
             exp = _dt.strptime(exp_str, "%b %d %H:%M:%S %Y %Z")
             ssl_days = (exp - _dt.utcnow()).days
     except Exception:
@@ -5084,6 +5809,85 @@ KNOWN_CALLERS = {
     "82.135.79.": "Team (MNET Germany)",
     "46.225.175.": "Team (Hetzner)",
 }
+
+@app.get("/admin/dashboard/journal")
+async def dashboard_journal(request: Request):
+    """Return today's and recent journal entries."""
+    _get_admin_session(request)
+    import glob
+    from pathlib import Path
+
+    journal_dir = Path.home() / "journal"
+    entries = []
+
+    if journal_dir.exists():
+        files = sorted(journal_dir.glob("*.md"), reverse=True)[:7]
+        for f in files:
+            entries.append({
+                "date": f.stem,
+                "content": f.read_text(),
+                "size": f.stat().st_size,
+            })
+
+    return {
+        "entries": entries,
+        "total_files": len(list(journal_dir.glob("*.md"))) if journal_dir.exists() else 0,
+    }
+
+
+@app.get("/admin/dashboard/journal/{date}")
+async def dashboard_journal_entry(request: Request, date: str):
+    """Return a specific journal entry by date (YYYY-MM-DD)."""
+    _get_admin_session(request)
+    from pathlib import Path
+    import re
+
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise HTTPException(400, "Invalid date format. Use YYYY-MM-DD.")
+
+    journal_file = Path.home() / "journal" / f"{date}.md"
+    if not journal_file.exists():
+        raise HTTPException(404, f"No journal entry for {date}")
+
+    return {
+        "date": date,
+        "content": journal_file.read_text(),
+    }
+
+class JournalAppendRequest(BaseModel):
+    text: str = Field(max_length=2000)
+    date: str = Field(default=None, max_length=10)
+
+@app.post("/admin/journal/append")
+async def journal_append(request: Request, body: JournalAppendRequest):
+    """Append a note to today's (or specified date's) journal entry."""
+    _get_admin_session(request)
+    from pathlib import Path
+    import re, datetime
+
+    import zoneinfo as _zi; date = body.date or _dt.datetime.now(_zi.ZoneInfo("Europe/Zurich")).date().isoformat()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise HTTPException(400, "Invalid date format")
+
+    journal_dir = Path.home() / "journal"
+    journal_dir.mkdir(exist_ok=True)
+    journal_file = journal_dir / f"{date}.md"
+
+    note = body.text.strip()
+    if not note:
+        raise HTTPException(400, "Empty note")
+
+    timestamp = _dt.datetime.now(_zi.ZoneInfo("Europe/Zurich")).strftime("%H:%M CEST")
+    formatted = f"\n\n### Note ({timestamp})\n{note}\n"
+
+    with open(journal_file, "a") as f:
+        f.write(formatted)
+
+    return {"status": "appended", "date": date, "timestamp": timestamp}
+
+
+
+
 
 CALLER_CATEGORIES = {
     "176.65.148.": "ai_agent",
@@ -5445,4 +6249,52 @@ async def wallet_shadow_score(request: Request, address: str = Path(max_length=6
         "trust_score": trust_score,
         "grade": grade,
         "register_url": f"https://moltrust.ch/register?wallet={address}" if not agent else None,
+    }
+
+# ── Billing Router ──
+app.include_router(billing_router)
+
+# ── Attestations Endpoint ─────────────────────────────────────────────────────
+
+import uuid as _uuid
+from datetime import timedelta, timezone
+
+@app.get("/attestations/{attestation_id}")
+async def get_attestation(attestation_id: str, did: str = None):
+    """
+    Resolve a MolTrust behavioral_trust attestation by ID.
+    Compatible with aeoess/agent-governance-vocabulary canonical signal format.
+    """
+    target_did = did or f"did:moltrust:{attestation_id}"
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT did, score, computed_at FROM trust_score_cache WHERE did = $1",
+            target_did
+        )
+
+    if not row:
+        raise HTTPException(404, f"No attestation found for {target_did}")
+
+    now = datetime.now(timezone.utc)
+    expires = now + timedelta(hours=1)
+    score = float(row["score"])
+    grade = "S" if score >= 95 else "A" if score >= 80 else "B" if score >= 60 else "C" if score >= 40 else "D" if score >= 20 else "F"
+
+    return {
+        "id": attestation_id,
+        "did": row["did"],
+        "canonical_signal": "behavioral_trust",
+        "value": score,
+        "scale": "0-100",
+        "grade": grade,
+        "issued_at": row["computed_at"].isoformat() if row["computed_at"] else now.isoformat(),
+        "expires_at": expires.isoformat(),
+        "issuer": "did:moltrust:registry",
+        "attestation_uri": f"https://api.moltrust.ch/attestations/{attestation_id}",
+        "registry_signature": {
+            "type": "Ed25519Signature2020",
+            "verificationMethod": "did:moltrust:registry#keys-1",
+            "note": "Signature verification via /.well-known/did.json"
+        }
     }
