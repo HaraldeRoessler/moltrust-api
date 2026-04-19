@@ -160,27 +160,75 @@ async def get_agent(identifier: str):
             "metadata_uri": row["metadata_uri"],
         }
 
-        # Trust breakdown if MolTrust-verified
+        # Trust breakdown — try cache first, fall back to live computation
         trust_breakdown = None
-        if row["moltrust_did"] and row["moltrust_trust_score"] is not None:
+        if row["moltrust_did"]:
             cached = await conn.fetchrow(
                 """SELECT score, endorser_count, propagated_score, cross_vertical_bonus,
                           computation_method, cache_valid_until
                    FROM trust_score_cache WHERE did = $1""",
                 row["moltrust_did"],
             )
-            if cached:
-                trust_breakdown = {
-                    "final_score": float(cached["score"]) if cached["score"] is not None else None,
-                    "components": {
-                        "direct_endorsements": {"weight": 0.6, "note": f"{cached['endorser_count']} endorsers"},
-                        "propagated_trust": {"value": float(cached["propagated_score"] or 0), "weight": 0.3},
-                        "cross_vertical": {"value": float(cached["cross_vertical_bonus"] or 0), "weight": 0.1},
-                    },
-                    "computation_method": cached["computation_method"],
-                    "formula": "score = 0.6*direct + 0.3*propagated + 0.1*cross_vertical + bonuses - sybil_penalty*20",
-                    "methodology_url": "/explorer/methodology",
-                }
+
+            if cached and cached["score"] is not None:
+                trust_breakdown = _build_breakdown_from_cache(cached)
+            else:
+                # No cache — try live computation via swarm module
+                try:
+                    from app.swarm.trust_score import compute_phase2_score
+                    result = await compute_phase2_score(row["moltrust_did"], conn)
+                    if result and result.get("score") is not None:
+                        agent["moltrust_trust_score"] = result["score"]
+                        trust_breakdown = {
+                            "final_score": result["score"],
+                            "components": {
+                                "direct_endorsements": {
+                                    "value": result.get("direct_score", 0),
+                                    "weight": 0.6,
+                                    "contribution": round(0.6 * result.get("direct_score", 0), 1),
+                                },
+                                "propagated_trust": {
+                                    "value": result.get("propagated_score", 0),
+                                    "weight": 0.3,
+                                    "contribution": round(0.3 * result.get("propagated_score", 0), 1),
+                                },
+                                "cross_vertical_bonus": {
+                                    "value": result.get("cross_vertical_bonus", 0),
+                                    "weight": 0.1,
+                                    "contribution": round(0.1 * result.get("cross_vertical_bonus", 0), 1),
+                                },
+                                "interaction_bonus": {"value": result.get("interaction_bonus", 0)},
+                                "prediction_bonus": {"value": result.get("prediction_bonus", 0)},
+                                "wallet_bonus": {"value": result.get("wallet_bonus", 0)},
+                                "agent_class_modifier": {"value": result.get("agent_class_modifier", 0)},
+                                "sybil_penalty": {
+                                    "value": result.get("sybil_penalty", 0),
+                                    "multiplier": 20,
+                                    "contribution": round(-result.get("sybil_penalty", 0) * 20, 1),
+                                },
+                                "inactivity_penalty": {"value": result.get("inactivity_penalty", 0)},
+                            },
+                            "computation_method": result.get("computation_method", "phase2"),
+                            "endorser_count": result.get("endorser_count", 0),
+                            "withheld": result.get("withheld", False),
+                            "formula": "score = 0.6*direct + 0.3*propagated + 0.1*cross_vertical + interaction + prediction + wallet + class_modifier - sybil*20 + inactivity",
+                            "methodology_url": "/explorer/methodology",
+                        }
+                    elif result and result.get("withheld"):
+                        trust_breakdown = {
+                            "final_score": None,
+                            "withheld": True,
+                            "reason": f"Fewer than 3 unique endorsers ({result.get('endorser_count', 0)} found)",
+                            "methodology_url": "/explorer/methodology",
+                        }
+                except Exception:
+                    # Swarm module not available in dev — graceful degradation
+                    if row["moltrust_did"]:
+                        trust_breakdown = {
+                            "final_score": None,
+                            "note": "Score not yet computed. Agent is MolTrust-verified but has no cached trust score.",
+                            "methodology_url": "/explorer/methodology",
+                        }
 
         # Flags stub (Phase B: real sybil/anomaly data)
         flags = []
@@ -193,39 +241,93 @@ async def get_agent(identifier: str):
         }
 
 
+def _build_breakdown_from_cache(cached) -> dict:
+    """Build trust breakdown from cached score data."""
+    return {
+        "final_score": float(cached["score"]) if cached["score"] is not None else None,
+        "components": {
+            "direct_endorsements": {
+                "weight": 0.6,
+                "note": f"{cached['endorser_count']} endorsers",
+            },
+            "propagated_trust": {
+                "value": float(cached["propagated_score"] or 0),
+                "weight": 0.3,
+            },
+            "cross_vertical_bonus": {
+                "value": float(cached["cross_vertical_bonus"] or 0),
+                "weight": 0.1,
+            },
+        },
+        "computation_method": cached["computation_method"],
+        "endorser_count": cached["endorser_count"],
+        "formula": "score = 0.6*direct + 0.3*propagated + 0.1*cross_vertical + interaction + prediction + wallet + class_modifier - sybil*20 + inactivity",
+        "methodology_url": "/explorer/methodology",
+    }
+
+
 @router.get("/methodology")
 async def get_methodology():
-    """Static methodology document."""
+    """
+    Full methodology document — honest representation of trust_score.py
+    and anti_collusion.py. No made-up weights.
+    """
     return {
-        "version": "1.0",
+        "version": "1.1",
         "trust_score_formula": {
-            "formula": "score = alpha*direct + beta*propagated + gamma*cross_vertical + bonuses - sybil_penalty*20",
+            "formula": "score = alpha*direct + beta*propagated + gamma*cross_vertical + interaction_bonus + prediction_bonus + wallet_bonus + agent_class_modifier - sybil_penalty*20 + inactivity_penalty",
+            "clamped": "[0, 100]",
             "parameters": {
                 "alpha": {"value": 0.6, "meaning": "Weight on direct endorsements from verified agents"},
-                "beta": {"value": 0.3, "meaning": "Weight on propagated trust through endorsement graph"},
-                "gamma": {"value": 0.1, "meaning": "Bonus for endorsements spanning multiple verticals"},
+                "beta": {"value": 0.3, "meaning": "Weight on propagated trust through endorsement graph (endorser scores)"},
+                "gamma": {"value": 0.1, "meaning": "Bonus for endorsements spanning multiple verticals (max 30 points from min(unique_verticals * 10, 30))"},
             },
-            "time_decay": "90-day half-life on endorsement evidence",
+            "bonus_components": {
+                "interaction_bonus": "Points from verified interaction proofs (IPR records, capped at 10)",
+                "prediction_bonus": "Accuracy bonus/malus from prediction market track record",
+                "wallet_bonus": "Skin-in-the-game bonus from wallet attestation",
+                "agent_class_modifier": "Per MoltID classification: orchestrator +5, autonomous 0, human_initiated 0, copilot -10",
+                "inactivity_penalty": "Penalty for agents inactive >30 days (RSAC Gap 3)",
+            },
+            "time_decay": {
+                "half_life_days": 90,
+                "description": "Endorsement evidence decays with 90-day half-life",
+            },
+            "seed_agents": {
+                "description": "Seed agents (bootstrap network) receive a base_score directly. Seed floor guard ensures they never drop below their registered base_score.",
+            },
+            "min_endorsers": 3,
+            "min_endorsers_note": "Agents with fewer than 3 unique endorsers have their score withheld (shown as null)",
             "score_range": "0 to 100, advisory not enforcement",
+            "source": "app/swarm/trust_score.py — compute_phase2_score()",
         },
         "sybil_detection": {
+            "source": "app/swarm/anti_collusion.py — compute_sybil_penalty()",
+            "description": "Graph-based sybil detection per Whitepaper Section 4.3. Returns a penalty value [0, inf) that is multiplied by 20 and subtracted from the raw score.",
             "signals": [
-                {"name": "jaccard_clustering", "weight": 6, "description": "Densely interconnected endorsement subgraphs with no external bridging"},
-                {"name": "common_funder", "weight": 6, "description": "Multiple wallets funded from the same source address"},
-                {"name": "inhuman_velocity", "weight": 5, "description": "Endorsement patterns beyond plausible human cadence"},
-                {"name": "score_clustering", "weight": 1, "description": "Wallets giving near-identical scores across many agents"},
-                {"name": "sweep_pattern", "weight": 3, "description": "Reviewers endorsing many agents then never returning"},
+                {
+                    "name": "jaccard_clustering",
+                    "description": "Pairwise Jaccard similarity of endorser sets. When two agents share >80% of their endorsers (Jaccard > 0.8 threshold), penalty = jaccard * endorser_count * 0.5 per pair.",
+                    "threshold": 0.8,
+                },
+                {
+                    "name": "vertical_diversity",
+                    "description": "If fewer than 3 unique verticals are represented in the endorsement set, flat penalty of 10.0 applied.",
+                    "min_verticals": 3,
+                    "flat_penalty": 10.0,
+                },
             ],
-            "severity_tiers": {"low": "0-2", "moderate": "3-9", "elevated": "10-19", "heavy": "20+"},
+            "note": "Additional signals (common_funder, inhuman_velocity, sweep_pattern) are described in Whitepaper Section 4.3 but not yet implemented in the scoring pipeline. They will be added as the network grows.",
         },
         "flag_philosophy": {
             "framing": "Patterns detected. You decide.",
-            "disclaimer": "A flag describes what happened, not why.",
+            "disclaimer": "A flag describes what happened, not why. The agent may be the beneficiary, the victim, or uninvolved.",
         },
         "enforcement_class": "advisory",
-        "standards_alignment": ["W3C DID 1.0", "W3C VC 2.0", "DIF Universal Resolver", "A2A v0.3"],
+        "refusal_authority": "consumer_policy — MolTrust scores are inputs to policy decisions, not the decisions themselves",
+        "standards_alignment": ["W3C DID 1.0", "W3C VC 2.0", "DIF Universal Resolver", "A2A v0.3", "ERC-8004"],
         "sources_indexed": {
-            "erc8004": {"status": "live", "chain": "base", "scanner_cron": "daily 06:30 UTC"},
+            "erc8004": {"status": "live", "chain": "base", "scanner_cron": "daily 06:30 UTC", "agents_indexed": "44,000+"},
             "virtuals": {"status": "planned", "chain": "base"},
             "farcaster": {"status": "planned", "chain": "farcaster"},
         },
