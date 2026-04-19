@@ -170,8 +170,18 @@ async def get_agent(identifier: str):
                 row["moltrust_did"],
             )
 
-            if cached and cached["score"] is not None:
+            if cached and cached["score"] is not None and cached["score"] >= 0:
                 trust_breakdown = _build_breakdown_from_cache(cached)
+                trust_breakdown["status"] = "scored"
+            elif cached and (cached["score"] is None or cached["score"] < 0):
+                trust_breakdown = {
+                    "final_score": None,
+                    "status": "withheld",
+                    "withheld": True,
+                    "reason": f"Fewer than 3 unique endorsers ({cached['endorser_count']} found)",
+                    "endorser_count": cached["endorser_count"],
+                    "methodology_url": "/explorer/methodology",
+                }
             else:
                 # No cache — try live computation via swarm module
                 try:
@@ -213,10 +223,12 @@ async def get_agent(identifier: str):
                             "withheld": result.get("withheld", False),
                             "formula": "score = 0.6*direct + 0.3*propagated + 0.1*cross_vertical + interaction + prediction + wallet + class_modifier - sybil*20 + inactivity",
                             "methodology_url": "/explorer/methodology",
+                            "status": "scored",
                         }
                     elif result and result.get("withheld"):
                         trust_breakdown = {
                             "final_score": None,
+                            "status": "withheld",
                             "withheld": True,
                             "reason": f"Fewer than 3 unique endorsers ({result.get('endorser_count', 0)} found)",
                             "methodology_url": "/explorer/methodology",
@@ -226,6 +238,7 @@ async def get_agent(identifier: str):
                     if row["moltrust_did"]:
                         trust_breakdown = {
                             "final_score": None,
+                            "status": "pending",
                             "note": "Score not yet computed. Agent is MolTrust-verified but has no cached trust score.",
                             "methodology_url": "/explorer/methodology",
                         }
