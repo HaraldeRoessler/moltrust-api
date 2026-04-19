@@ -38,6 +38,7 @@ from app.provenance.ipr import (
     get_iprs_by_agent, get_ipr_stats, submit_outcome,
 )
 from app.provenance.anchor import anchor_batch, anchor_single_calldata
+from app.test_harness.routes import router as test_harness_router
 from app.provenance.confidence import (
     compute_calibration_score as _ipr_calibration,
     check_confidence_inflation as _ipr_inflation,
@@ -6253,6 +6254,7 @@ async def wallet_shadow_score(request: Request, address: str = Path(max_length=6
 
 # ── Billing Router ──
 app.include_router(billing_router)
+app.include_router(test_harness_router)
 
 # ── Attestations Endpoint ─────────────────────────────────────────────────────
 
