@@ -19,7 +19,7 @@ import os
 
 router = APIRouter(prefix="/test-harness", tags=["test-harness"])
 
-TEST_HARNESS_DID = "did:moltrust:te5tharne550001"
+TEST_HARNESS_DID = "did:moltrust:7e57da001e550001"
 SK_PATH = os.path.expanduser("~/.testharness_sk_b58")
 
 DB_CONFIG = {
