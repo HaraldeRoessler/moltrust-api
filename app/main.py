@@ -6041,6 +6041,148 @@ async def site_search(request: Request, q: str = Query("", min_length=2, max_len
 
 
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CALLERS REGISTRY (Admin Dashboard)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/admin/dashboard/callers")
+async def dashboard_callers(
+    request: Request,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    q: str = Query(None, min_length=2, max_length=100),
+):
+    """Aggregated caller list from request_log. Admin auth."""
+    _get_admin_session(request)
+    if not db_pool:
+        raise HTTPException(503, "Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        where = "WHERE ip IS NOT NULL"
+        params = []
+        idx = 1
+
+        if q:
+            where += f" AND (ip ILIKE ${idx} OR ip_org ILIKE ${idx} OR user_agent ILIKE ${idx})"
+            params.append(f"%{q}%")
+            idx += 1
+
+        total = await conn.fetchval(
+            f"SELECT COUNT(DISTINCT ip) FROM request_log {where}", *params
+        )
+
+        rows = await conn.fetch(f"""
+            SELECT
+                ip,
+                COUNT(*) AS total_requests,
+                MIN(ts) AS first_seen,
+                MAX(ts) AS last_seen,
+                COUNT(DISTINCT endpoint) AS unique_endpoints,
+                MAX(user_agent) AS sample_user_agent,
+                MAX(ip_org) AS ip_org,
+                MAX(ip_country) AS ip_country,
+                MAX(source) AS source,
+                MAX(agent_did) AS agent_did,
+                COUNT(DISTINCT DATE(ts)) AS days_active,
+                SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_count
+            FROM request_log
+            {where}
+            GROUP BY ip
+            ORDER BY MAX(ts) DESC
+            LIMIT ${idx} OFFSET ${idx + 1}
+        """, *params, limit, offset)
+
+        return {
+            "total": total,
+            "callers": [
+                {
+                    "ip": r["ip"],
+                    "total_requests": r["total_requests"],
+                    "first_seen": r["first_seen"].isoformat() if r["first_seen"] else None,
+                    "last_seen": r["last_seen"].isoformat() if r["last_seen"] else None,
+                    "unique_endpoints": r["unique_endpoints"],
+                    "sample_user_agent": r["sample_user_agent"],
+                    "identified_as": r["ip_org"],
+                    "ip_country": r["ip_country"],
+                    "source": r["source"],
+                    "agent_did": r["agent_did"],
+                    "days_active": r["days_active"],
+                    "error_count": r["error_count"],
+                }
+                for r in rows
+            ],
+        }
+
+
+@app.get("/admin/dashboard/callers/{ip}")
+async def dashboard_caller_detail(request: Request, ip: str):
+    """Detail view for a single IP. Admin auth."""
+    _get_admin_session(request)
+    if not db_pool:
+        raise HTTPException(503, "Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        summary = await conn.fetchrow("""
+            SELECT
+                ip,
+                COUNT(*) AS total_requests,
+                MIN(ts) AS first_seen,
+                MAX(ts) AS last_seen,
+                COUNT(DISTINCT endpoint) AS unique_endpoints,
+                MAX(user_agent) AS sample_user_agent,
+                MAX(ip_org) AS ip_org,
+                MAX(ip_country) AS ip_country,
+                MAX(source) AS source,
+                MAX(agent_did) AS agent_did,
+                COUNT(DISTINCT DATE(ts)) AS days_active,
+                SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_count
+            FROM request_log
+            WHERE ip = $1
+            GROUP BY ip
+        """, ip)
+
+        if not summary:
+            raise HTTPException(404, f"No requests from IP: {ip}")
+
+        recent = await conn.fetch("""
+            SELECT ts, endpoint, method, status_code, response_ms, user_agent, source, agent_did
+            FROM request_log
+            WHERE ip = $1
+            ORDER BY ts DESC
+            LIMIT 50
+        """, ip)
+
+        return {
+            "ip": summary["ip"],
+            "total_requests": summary["total_requests"],
+            "first_seen": summary["first_seen"].isoformat() if summary["first_seen"] else None,
+            "last_seen": summary["last_seen"].isoformat() if summary["last_seen"] else None,
+            "unique_endpoints": summary["unique_endpoints"],
+            "sample_user_agent": summary["sample_user_agent"],
+            "identified_as": summary["ip_org"],
+            "ip_country": summary["ip_country"],
+            "source": summary["source"],
+            "agent_did": summary["agent_did"],
+            "days_active": summary["days_active"],
+            "error_count": summary["error_count"],
+            "recent_requests": [
+                {
+                    "ts": r["ts"].isoformat() if r["ts"] else None,
+                    "endpoint": r["endpoint"],
+                    "method": r["method"],
+                    "status_code": r["status_code"],
+                    "response_ms": r["response_ms"],
+                    "user_agent": r["user_agent"],
+                    "source": r["source"],
+                    "agent_did": r["agent_did"],
+                }
+                for r in recent
+            ],
+        }
+
+
 CALLER_CATEGORIES = {
     "176.65.148.": "ai_agent",
     "50.66.141.": "integration",
