@@ -5836,6 +5836,54 @@ async def dashboard_journal(request: Request):
     }
 
 
+
+
+@app.get("/admin/dashboard/journal/list")
+async def dashboard_journal_list(request: Request):
+    """List ALL available journal entries with preview. Admin auth."""
+    _get_admin_session(request)
+    from pathlib import Path as P
+    journal_dir = P.home() / "journal"
+    entries = []
+    if journal_dir.exists():
+        for f in sorted(journal_dir.glob("2*.md"), reverse=True):
+            text = f.read_text()
+            entries.append({
+                "date": f.stem,
+                "preview": text[:200].replace("\n", " ").strip(),
+                "size": f.stat().st_size,
+            })
+    return entries
+
+
+@app.get("/admin/dashboard/journal/search")
+async def dashboard_journal_search(request: Request, q: str = Query("", min_length=2, max_length=100)):
+    """Full-text search across all journal entries. Admin auth."""
+    _get_admin_session(request)
+    from pathlib import Path as P
+    journal_dir = P.home() / "journal"
+    q_lower = q.lower()
+    results = []
+    if journal_dir.exists():
+        for f in sorted(journal_dir.glob("2*.md"), reverse=True):
+            text = f.read_text()
+            lines = text.split("\n")
+            matches = []
+            for i, line in enumerate(lines, 1):
+                if q_lower in line.lower():
+                    start = max(0, line.lower().index(q_lower) - 40)
+                    end = min(len(line), start + len(q) + 80)
+                    matches.append({
+                        "line": i,
+                        "snippet": line[start:end].strip(),
+                    })
+            if matches:
+                results.append({"date": f.stem, "matches": matches})
+            if len(results) >= 50:
+                break
+    return results
+
+
 @app.get("/admin/dashboard/journal/{date}")
 async def dashboard_journal_entry(request: Request, date: str):
     """Return a specific journal entry by date (YYYY-MM-DD)."""
@@ -5885,6 +5933,99 @@ async def journal_append(request: Request, body: JournalAppendRequest):
         f.write(formatted)
 
     return {"status": "appended", "date": date, "timestamp": timestamp}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SITE-WIDE SEARCH (Public)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_site_search_cache: dict = {}
+
+@app.get("/api/search")
+@limiter.limit("30/minute")
+async def site_search(request: Request, q: str = Query("", min_length=2, max_length=80)):
+    """Public site-wide search over all HTML pages."""
+    import time as _time
+    from bs4 import BeautifulSoup
+    from pathlib import Path as P
+
+    q_lower = q.lower().strip()
+    cache_key = q_lower
+
+    cached = _site_search_cache.get(cache_key)
+    if cached and cached["expires"] > _time.time():
+        return cached["results"]
+
+    html_dir = P("/var/www/html")
+    results = []
+
+    html_files = []
+    for pattern in ["*.html", "blog/*.html", "enterprise/*.html", "docs/*.html", "partners/*.html"]:
+        html_files.extend(html_dir.glob(pattern))
+
+    seen = set()
+    for f in html_files:
+        rel = f.relative_to(html_dir)
+        rel_str = str(rel)
+        if rel_str in seen:
+            continue
+        if "admin" in rel_str or ".bak" in rel_str or "~" in rel_str:
+            continue
+        seen.add(rel_str)
+
+        try:
+            raw = f.read_text(errors="ignore")
+            soup = BeautifulSoup(raw, "html.parser")
+            for tag in soup(["script", "style"]):
+                tag.decompose()
+
+            title_tag = soup.find("title")
+            h1_tag = soup.find("h1")
+            title = ""
+            if title_tag and title_tag.string:
+                title = title_tag.string.strip()
+            elif h1_tag:
+                title = h1_tag.get_text(strip=True)
+
+            text = soup.get_text(separator=" ", strip=True)
+            text_lower = text.lower()
+            title_lower = title.lower()
+
+            if q_lower not in text_lower and q_lower not in title_lower:
+                continue
+
+            body_count = text_lower.count(q_lower)
+            title_count = title_lower.count(q_lower)
+            score = body_count + title_count * 3
+
+            idx = text_lower.find(q_lower)
+            snippet = ""
+            if idx >= 0:
+                start = max(0, idx - 80)
+                end = min(len(text), idx + len(q) + 80)
+                snippet = text[start:end].strip()
+                if start > 0:
+                    snippet = "..." + snippet
+                if end < len(text):
+                    snippet = snippet + "..."
+
+            url = "/" + rel_str
+            results.append({"title": title or rel_str, "url": url, "snippet": snippet, "score": score})
+        except Exception:
+            continue
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    results = results[:30]
+
+    _site_search_cache[cache_key] = {"results": results, "expires": _time.time() + 300}
+
+    now = _time.time()
+    for k in [k for k, v in _site_search_cache.items() if v["expires"] < now]:
+        _site_search_cache.pop(k, None)
+
+    return results
+
+
 
 
 
