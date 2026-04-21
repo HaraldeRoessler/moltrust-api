@@ -1050,6 +1050,12 @@ async def get_trust_score(did: str):
                 "flag_count": len(flags),
                 "computed_at": cached["computed_at"].isoformat() if cached else None,
                 "cache_valid_until": cached["cache_valid_until"].isoformat() if cached else None,
+                "consistency_level": "L1",
+                "evaluation_context": {
+                    "evaluated_at": int(cached["computed_at"].timestamp()) if cached else None,
+                    "policy_version": result["computation_method"],
+                    "cache_valid_seconds": int((cached["cache_valid_until"] - cached["computed_at"]).total_seconds()) if cached else 3600,
+                },
             }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -6423,7 +6429,7 @@ async def get_attestation(attestation_id: str, did: str = None):
     if not row:
         raise HTTPException(404, f"No attestation found for {target_did}")
 
-    now = datetime.now(timezone.utc)
+    now = _dt.datetime.now(timezone.utc)
     expires = now + timedelta(hours=1)
     score = float(row["score"])
     grade = "S" if score >= 95 else "A" if score >= 80 else "B" if score >= 60 else "C" if score >= 40 else "D" if score >= 20 else "F"
@@ -6444,4 +6450,137 @@ async def get_attestation(attestation_id: str, did: str = None):
             "verificationMethod": "did:moltrust:registry#keys-1",
             "note": "Signature verification via /.well-known/did.json"
         }
+    }
+
+
+# --- Test Harness: Partner Endorsement Endpoint ---
+
+class TestHarnessEndorseRequest(BaseModel):
+    endorser_did: str = Field(max_length=256)
+    target_did: str = Field(max_length=256)
+    weight: float = Field(default=1.0)
+    reason: str | None = Field(default=None, max_length=200)
+
+    @field_validator("weight")
+    @classmethod
+    def validate_weight(cls, v):
+        if v <= 0.0 or v > 1.0:
+            raise ValueError("weight must be > 0.0 and <= 1.0")
+        return v
+
+    @field_validator("reason")
+    @classmethod
+    def sanitize_reason(cls, v):
+        if v is None:
+            return v
+        if any(ch in v for ch in '<>"\''):
+            raise ValueError("reason contains disallowed characters")
+        return v.strip()
+
+
+async def _resolve_to_moltrust_did(did: str, conn) -> str | None:
+    """Resolve a DID to its did:moltrust: form. Returns None if not found."""
+    # Native MolTrust DID
+    if did.startswith("did:moltrust:"):
+        row = await conn.fetchrow("SELECT did FROM agents WHERE did = $1", did)
+        return row["did"] if row else None
+    # External DID — look up bridge
+    bridge = await conn.fetchrow(
+        "SELECT moltrust_did FROM did_bridges WHERE external_did = $1", did
+    )
+    return bridge["moltrust_did"] if bridge else None
+
+
+@app.post("/test-harness/endorse", tags=["Test Harness"])
+@limiter.limit("60/minute")
+async def test_harness_endorse(request: Request, body: TestHarnessEndorseRequest):
+    """Record an endorsement via partner test harness. Requires partner-tier API key."""
+    api_key = request.headers.get("X-API-Key") or request.headers.get("x-api-key") or ""
+
+    if not api_key:
+        raise HTTPException(401, "X-API-Key header required")
+    if api_key not in API_KEYS:
+        raise HTTPException(401, "Invalid API key")
+
+    if not db_pool:
+        raise HTTPException(503, "Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        # Check partner tier
+        key_row = await conn.fetchrow(
+            "SELECT tier, label FROM api_keys WHERE key = $1 AND active = true", api_key
+        )
+        if not key_row or key_row["tier"] != "partner":
+            raise HTTPException(403, "Partner-tier API key required")
+
+        partner_label = key_row["label"] or "unknown"
+
+        # Resolve both DIDs
+        endorser_mt = await _resolve_to_moltrust_did(body.endorser_did, conn)
+        target_mt = await _resolve_to_moltrust_did(body.target_did, conn)
+
+        if not endorser_mt and not target_mt:
+            raise HTTPException(404, f"Neither DID is registered: {body.endorser_did}, {body.target_did}")
+        if not endorser_mt:
+            raise HTTPException(404, f"Endorser DID not registered: {body.endorser_did}")
+        if not target_mt:
+            raise HTTPException(404, f"Target DID not registered: {body.target_did}")
+
+        now = _dt.datetime.now(timezone.utc)
+        endorsement_id = f"end_{uuid.uuid4().hex[:16]}"
+
+        # Upsert: update if (endorser, target) pair exists, otherwise insert
+        existing = await conn.fetchrow(
+            "SELECT id FROM endorsements WHERE endorser_did = $1 AND endorsed_did = $2",
+            endorser_mt, target_mt
+        )
+
+        if existing:
+            await conn.execute(
+                "UPDATE endorsements SET weight = $1, skill = $2, evidence_timestamp = $3 "
+                "WHERE endorser_did = $4 AND endorsed_did = $5",
+                body.weight, body.reason or "test-harness", now,
+                endorser_mt, target_mt
+            )
+        else:
+            expires = now + _dt.timedelta(days=90)
+            await conn.execute(
+                "INSERT INTO endorsements "
+                "(endorser_did, endorsed_did, skill, evidence_hash, vertical, weight, "
+                " issued_at, expires_at, evidence_timestamp) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                endorser_mt, target_mt,
+                body.reason or "test-harness",
+                f"test-harness:{endorsement_id}",
+                "general",
+                body.weight,
+                now, expires, now
+            )
+
+        # Invalidate trust score cache for target
+        await conn.execute(
+            "DELETE FROM trust_score_cache WHERE did = $1", target_mt
+        )
+
+        # Audit log
+        try:
+            await conn.execute(
+                "INSERT INTO request_log (method, path, ip, api_key_prefix, response_status, logged_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                "POST", "/test-harness/endorse",
+                request.client.host if request.client else "unknown",
+                f"{partner_label}:{api_key[:12]}...",
+                200, now
+            )
+        except Exception:
+            pass  # Audit log failure should not break the endpoint
+
+    return {
+        "status": "recorded",
+        "endorser_did": endorser_mt,
+        "target_did": target_mt,
+        "weight": body.weight,
+        "reason": body.reason,
+        "recorded_at": now.isoformat(),
+        "endorsement_id": endorsement_id,
     }
