@@ -5976,7 +5976,10 @@ async def site_search(request: Request, q: str = Query("", min_length=2, max_len
         try:
             raw = f.read_text(errors="ignore")
             soup = BeautifulSoup(raw, "html.parser")
-            for tag in soup(["script", "style"]):
+            for tag in soup(["nav", "footer", "header", "aside",
+                              "script", "style", "noscript"]):
+                tag.decompose()
+            for tag in soup.find_all(class_=["mobile-menu", "nav-hamburger"]):
                 tag.decompose()
 
             title_tag = soup.find("title")
@@ -5984,6 +5987,7 @@ async def site_search(request: Request, q: str = Query("", min_length=2, max_len
             title = ""
             if title_tag and title_tag.string:
                 title = title_tag.string.strip()
+                title_tag.decompose()
             elif h1_tag:
                 title = h1_tag.get_text(strip=True)
 
