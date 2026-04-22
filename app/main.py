@@ -6664,9 +6664,9 @@ async def test_harness_endorse(request: Request, body: TestHarnessEndorseRequest
         if not endorser_mt and not target_mt:
             raise HTTPException(404, f"Neither DID is registered: {body.endorser_did}, {body.target_did}")
         if not endorser_mt:
-            raise HTTPException(404, f"Endorser DID not registered: {body.endorser_did}")
+            raise HTTPException(404, f"Endorser DID not bridged: {body.endorser_did}. Complete /test-harness/invoke handshake first or request admin bridge.")
         if not target_mt:
-            raise HTTPException(404, f"Target DID not registered: {body.target_did}")
+            raise HTTPException(404, f"Target DID not bridged: {body.target_did}. Complete /test-harness/invoke handshake first or request admin bridge.")
 
         now = _dt.datetime.now(timezone.utc)
         endorsement_id = f"end_{uuid.uuid4().hex[:16]}"
@@ -6694,7 +6694,7 @@ async def test_harness_endorse(request: Request, body: TestHarnessEndorseRequest
                 endorser_mt, target_mt,
                 body.reason or "test-harness",
                 f"test-harness:{endorsement_id}",
-                "general",
+                "core",
                 body.weight,
                 now, expires, now
             )

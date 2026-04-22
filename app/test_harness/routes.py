@@ -101,9 +101,47 @@ async def invoke(req: InvokeRequest):
             signature, now, now, "pending", 0, "base",
         )
 
+        # Auto-bridge external DIDs (Issue A fix)
+        # Creates a shadow agent in agents table, then bridges external→shadow
+        if not req.caller_did.startswith("did:moltrust:"):
+            try:
+                # Check if already bridged
+                existing = await conn.fetchval(
+                    "SELECT moltrust_did FROM did_bridges WHERE external_did = $1",
+                    req.caller_did
+                )
+                if existing:
+                    bridge_status = "already_bridged"
+                else:
+                    did_method = req.caller_did.split(":")[1]
+                    shadow_did = f"did:moltrust:ext_{hashlib.sha256(req.caller_did.encode()).hexdigest()[:16]}"
+                    # Register shadow agent (idempotent)
+                    await conn.execute(
+                        "INSERT INTO agents (did, display_name, platform, agent_type) "
+                        "VALUES ($1, $2, $3, $4) "
+                        "ON CONFLICT (did) DO NOTHING",
+                        shadow_did,
+                        f"bridged:{did_method}:{caller_short}",
+                        did_method,
+                        "external",
+                    )
+                    # Create bridge entry
+                    await conn.execute(
+                        "INSERT INTO did_bridges (external_did, moltrust_did, chain, wallet_address) "
+                        "VALUES ($1, $2, $3, $4) "
+                        "ON CONFLICT (external_did) DO NOTHING",
+                        req.caller_did, shadow_did, did_method, "",
+                    )
+                    bridge_status = "auto_bridged"
+            except Exception as be:
+                bridge_status = f"bridge_error: {str(be)[:80]}"
+        else:
+            bridge_status = "native_did"
+
         await conn.close()
     except Exception as e:
         db_status = f"non_fatal_error: {str(e)[:100]}"
+        bridge_status = "skipped"
 
     return {
         "interaction_id": interaction_id,
@@ -114,6 +152,7 @@ async def invoke(req: InvokeRequest):
         "ipr_hash": ipr_hash,
         "signature": signature,
         "signature_algorithm": "Ed25519",
+        "bridge_status": bridge_status if "bridge_status" in dir() else "unknown",
         "trust_score_update": {
             "caller_score_before": score_before,
             "note": "Score updates are asynchronous; re-check via /skill/trust-score/{did} after 60s",
