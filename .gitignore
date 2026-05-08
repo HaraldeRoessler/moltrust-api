@@ -60,3 +60,22 @@ htmlcov/
 # Node
 node_modules/
 reviews/
+
+# Backup patterns - never commit, never clutter status
+*.bak
+*.bak.*
+*.bak-*
+*_backup.py
+*.backup
+
+# Experimental scratchpads — uncommit until productized
+experiments/
+
+# Runtime state written by daemons (not source-of-truth)
+state/*.json
+monitor/.poll_state.json
+monitor/*.log
+logs/
+drafts/
+moltbook/state.json
+agents/workspace/*/MEMORY.md
