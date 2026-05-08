@@ -5,10 +5,11 @@ Monitors Polymarket for manipulation patterns, posts analysis to Moltbook.
 Built by MolTrust (moltrust.ch).
 
 Usage:
-    moltguard.py scan        — Scan Polymarket, detect anomalies, save results
-    moltguard.py post-brief  — Post market integrity daily brief to Moltbook
-    moltguard.py post-deep   — Post deep-dive on a specific anomaly
-    moltguard.py post-edu    — Post educational content about trust infra
+    moltguard.py scan         — Scan Polymarket, detect anomalies, save results
+    moltguard.py scan-events  — Scan multi-outcome events the markets scan misses
+    moltguard.py post-brief   — Post market integrity daily brief to Moltbook
+    moltguard.py post-deep    — Post deep-dive on a specific anomaly
+    moltguard.py post-edu     — Post educational content about trust infra
 """
 
 import argparse
@@ -18,7 +19,7 @@ import os
 import re
 import statistics
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -36,6 +37,7 @@ MOLTRUST_API = "https://api.moltrust.ch"
 
 DATA_DIR = Path.home() / "moltstack" / "data"
 SCAN_FILE = DATA_DIR / "moltguard_scan.json"
+EVENTS_FILE = DATA_DIR / "moltguard_events.json"
 STATE_FILE = DATA_DIR / "trustscout_state.json"
 LOG_FILE = Path.home() / "moltstack" / "logs" / "moltguard.log"
 
@@ -43,6 +45,7 @@ LOG_FILE = Path.home() / "moltstack" / "logs" / "moltguard.log"
 ZSCORE_THRESHOLD = 3.0
 PRICE_MOVE_THRESHOLD = 0.15  # 15%
 LOW_LIQUIDITY_THRESHOLD = 10_000  # $10k
+EVENTS_VOLUME_THRESHOLD = 100_000  # $100k — skip events below this
 
 # Submolts to rotate through
 SUBMOLTS = ["general", "crypto", "technology", "business"]
@@ -839,6 +842,185 @@ def cmd_post_edu():
 
 
 # ---------------------------------------------------------------------------
+# Events scanner — multi-outcome events that the markets-endpoint scan misses
+# ---------------------------------------------------------------------------
+
+
+def _fetch_paginated_events(url_base, headers, max_pages=30):
+    """Paginate Polymarket gamma-api events. Dedups by slug, stops on empty
+    or short page. 200ms sleep between calls (defensive — gamma-api has no
+    documented public rate limit but be a good citizen)."""
+    all_events = []
+    seen_slugs = set()
+    LIMIT = 500
+    for page in range(max_pages):
+        offset = page * LIMIT
+        r = httpx.get(
+            f"{url_base}&offset={offset}&limit={LIMIT}",
+            headers=headers,
+            timeout=30,
+        )
+        r.raise_for_status()
+        events = r.json()
+        if not events:
+            break
+        new = [e for e in events if e.get("slug") not in seen_slugs]
+        all_events.extend(new)
+        seen_slugs.update(e.get("slug") for e in new if e.get("slug"))
+        if len(events) < LIMIT:
+            break
+        time.sleep(0.2)
+    return all_events
+
+
+def cmd_scan_events():
+    """Scan Polymarket events endpoint for multi-outcome anomalies."""
+    log.info("Starting Polymarket events scan...")
+
+    headers = {"User-Agent": "moltguard/1.0 (+https://moltrust.ch)"}
+    seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    anomalies_found = 0
+    multi_outcome_logged = 0
+    events_results = []
+    total_scanned = 0
+
+    try:
+        # Live events: paginate the full active universe (~10k events).
+        # Sub-threshold events (volume < EVENTS_VOLUME_THRESHOLD) are skipped
+        # later in the loop, but total_events_scanned reflects the true count.
+        live_events = _fetch_paginated_events(
+            f"{POLYMARKET_BASE}/events?closed=false&order=volume&ascending=false",
+            headers,
+        )
+        log.info(f"Fetched {len(live_events)} live events (paginated)")
+
+        # Closed events: single fetch, sorted by closedTime desc. The 7-day
+        # client-side filter below caps the relevant window naturally — no
+        # pagination needed (Polymarket closes ~50 events/day, one page covers).
+        closed_response = httpx.get(
+            f"{POLYMARKET_BASE}/events?closed=true&order=closedTime&ascending=false&limit=500",
+            headers=headers,
+            timeout=30,
+        )
+        closed_response.raise_for_status()
+        closed_events = closed_response.json()
+
+        recent_closed = []
+        for event in closed_events:
+            try:
+                ts_str = event.get("closedTime") or event.get("endDate")
+                if not ts_str:
+                    continue
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                if ts >= seven_days_ago:
+                    recent_closed.append(event)
+            except (ValueError, TypeError):
+                continue
+
+        # Tag each event with its source so is_live can be tracked without
+        # relying on a possibly-missing 'closed' field.
+        tagged = [(e, True) for e in live_events] + [(e, False) for e in recent_closed]
+        total_scanned = len(tagged)
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        for event, is_live in tagged:
+            try:
+                volume = float(event.get("volume") or 0)
+                if volume < EVENTS_VOLUME_THRESHOLD:
+                    continue
+
+                anomalies = []
+                if volume > 1_000_000:
+                    anomalies.append("volume_spike")
+
+                child_markets = event.get("markets") or []
+                if child_markets:
+                    active_markets = sum(
+                        1 for m in child_markets
+                        if float(m.get("volumeNum") or 0) > 1000
+                    )
+                    if active_markets > 5 and volume > 500_000:
+                        anomalies.append("high_fragmentation")
+
+                title = (event.get("title") or "Unknown")[:100]
+                slug = event.get("slug", "?")
+                closed_at = event.get("closedTime") or event.get("endDate") or ""
+
+                if anomalies:
+                    log.info(
+                        f"ANOMALY: event:{slug} "
+                        f"[{', '.join(anomalies)}] "
+                        f"volume=${volume:,.0f} "
+                        f"markets={len(child_markets)} "
+                        f"title=\"{title}\""
+                    )
+                    events_results.append({
+                        "slug": slug,
+                        "title": event.get("title") or "Unknown",
+                        "category": "anomaly",
+                        "flags": anomalies,
+                        "volume": volume,
+                        "markets_count": len(child_markets),
+                        "detected_at": now_iso,
+                        "closed_at": closed_at,
+                        "is_live": is_live,
+                    })
+                    anomalies_found += 1
+                elif len(child_markets) >= 3:
+                    # Informational: multi-outcome event the markets-endpoint scan
+                    # likely under-samples. Not an anomaly, but visibility material.
+                    log.info(
+                        f"event:{slug} "
+                        f"[multi_outcome] "
+                        f"volume=${volume:,.0f} "
+                        f"markets={len(child_markets)} "
+                        f"title=\"{title}\""
+                    )
+                    events_results.append({
+                        "slug": slug,
+                        "title": event.get("title") or "Unknown",
+                        "category": "multi_outcome",
+                        "flags": ["multi_outcome"],
+                        "volume": volume,
+                        "markets_count": len(child_markets),
+                        "detected_at": now_iso,
+                        "closed_at": closed_at,
+                        "is_live": is_live,
+                    })
+                    multi_outcome_logged += 1
+            except (KeyError, ValueError, TypeError) as e:
+                log.warning(f"Error processing event {event.get('slug', 'unknown')}: {e}")
+                continue
+
+    except httpx.RequestError as e:
+        log.error(f"Network error during events scan: {e}")
+    except httpx.HTTPStatusError as e:
+        log.error(f"HTTP error during events scan: {e.response.status_code}")
+    except Exception as e:
+        log.error(f"Unexpected error during events scan: {e}")
+
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(EVENTS_FILE, "w") as f:
+            json.dump({
+                "last_scan": datetime.now(timezone.utc).isoformat(),
+                "total_events_scanned": total_scanned,
+                "anomaly_count": anomalies_found,
+                "multi_outcome_count": multi_outcome_logged,
+                "events": events_results,
+            }, f, indent=2)
+    except OSError as e:
+        log.error(f"Failed to write {EVENTS_FILE}: {e}")
+
+    log.info(
+        f"Events scan complete. {anomalies_found} anomalies, "
+        f"{multi_outcome_logged} multi-outcome events logged. "
+        f"Persisted {len(events_results)} records to {EVENTS_FILE.name}."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -847,8 +1029,8 @@ def main():
     parser = argparse.ArgumentParser(description="MoltGuard — Integrity Watchdog")
     parser.add_argument(
         "command",
-        choices=["scan", "post-brief", "post-deep", "post-edu"],
-        help="scan=monitor markets, post-*=post to Moltbook",
+        choices=["scan", "scan-events", "post-brief", "post-deep", "post-edu"],
+        help="scan=monitor markets, scan-events=monitor multi-outcome events, post-*=post to Moltbook",
     )
     args = parser.parse_args()
 
@@ -863,6 +1045,8 @@ def main():
 
     if args.command == "scan":
         cmd_scan()
+    elif args.command == "scan-events":
+        cmd_scan_events()
     elif args.command in ("post-brief", "post-deep", "post-edu"):
         if not MOLTBOOK_KEY:
             log.error("MOLTGUARD_MOLTBOOK_KEY not set")
