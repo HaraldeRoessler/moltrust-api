@@ -8,7 +8,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from pydantic import BaseModel, Field, field_validator
-import uuid, datetime; import datetime as _dt; import httpx, os, re, asyncpg, json, asyncio, logging, time, hashlib, secrets
+import uuid, datetime; import datetime as _dt; import httpx, os, re, asyncpg, json, asyncio, logging, time, hashlib, secrets, urllib.parse
 
 
 # --- Sports Module ---
@@ -32,7 +32,7 @@ from app.fantasy import (
 )
 
 from app.provenance.ipr import ensure_table as ensure_ipr_table
-from app.billing import router as billing_router, ensure_billing_tables
+from app.billing import router as billing_router, admin_router as billing_admin_router, ensure_billing_tables
 from app.provenance.ipr import (
     validate_ipr_input, insert_ipr, get_ipr,
     get_iprs_by_agent, get_ipr_stats, submit_outcome,
@@ -49,7 +49,16 @@ from app.provenance.reconcile import (
 
 app = FastAPI(title="MolTrust API", version="2.4", docs_url=None)
 
-limiter = Limiter(key_func=get_remote_address)
+def _ratelimit_key(request) -> str:
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[-1].strip()
+    return get_remote_address(request)
+
+limiter = Limiter(key_func=_ratelimit_key)
 app.state.limiter = limiter
 
 logger = logging.getLogger("moltrust")
@@ -315,9 +324,12 @@ async def _enrich_ip(ip: str) -> dict:
 
 
 def _get_client_ip(request) -> str:
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()[:50]
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
-        return forwarded.split(",")[0].strip()[:50]
+        return forwarded.split(",")[-1].strip()[:50]
     return (request.client.host if request.client else "unknown")[:50]
 
 
@@ -452,7 +464,7 @@ async def credit_middleware(request: Request, call_next):
     return response
 
 # --- Validation Helpers ---
-DID_PATTERN = re.compile(r"^did:moltrust:[a-f0-9]{16}$")
+DID_PATTERN = re.compile(r"^did:moltrust:(?:ext_)?[a-f0-9]{16}$")
 DISPLAY_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-. ]{1,64}$")
 
 def validate_did(did: str) -> str:
@@ -904,6 +916,121 @@ async def verify_agent(request: Request, did: str = Path(max_length=40)):
                 result["verified"] = True
                 await update_last_seen(did)
     return result
+
+# Grade → tier mapping used by the moltrust.ch /verify/{did} frontend.
+# The frontend renders `tier-${tier}` as a CSS class, so the value
+# must be a non-empty string. Low/no grades collapse to "none" rather
+# than null so the class name stays well-formed.
+_BADGE_TIER_BY_GRADE = {"A": "gold", "B": "silver", "C": "bronze"}
+
+
+@app.get("/identity/badge/{did}.svg")
+@limiter.limit("60/minute")
+async def get_identity_badge_svg(request: Request, did: str = Path(max_length=80)):
+    """SVG badge for embedding/inlining on the moltrust.ch /verify/{did}
+    page. The frontend fetches this in parallel with /identity/badge/{did}
+    and inlines the result via r.text().
+
+    Mirrors the rendering logic of /badge/{did:path} (which predates the
+    /identity/* convention) so both URLs stay in lockstep. 1h cache.
+    Returns 200 with a placeholder SVG even for unknown/unscored DIDs —
+    matches the /badge/{did:path} behaviour (renders 'N/A' rather than
+    surfacing a 404 inline image).
+    """
+    from app.swarm.trust_score import compute_phase2_score, score_to_grade
+    score = None
+    grade = None
+    try:
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                result = await compute_phase2_score(did, conn)
+                score = result.get("score")
+                grade = score_to_grade(score)
+    except Exception:
+        pass
+
+    did_short = did[-8:] if len(did) > 8 else did
+    svg = _build_badge_svg(score, grade, did_short)
+
+    from starlette.responses import Response as _Resp
+    return _Resp(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={
+            "Cache-Control": "max-age=3600, s-maxage=3600",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+@app.get("/identity/badge/{did}")
+@limiter.limit("60/minute")
+async def get_identity_badge(request: Request, did: str = Path(max_length=80)):
+    """Identity badge — composite of agent metadata, current trust score and
+    rating count, plus convenience URLs for the public verify page and SVG
+    badge. Used by the moltrust.ch /verify/{did} frontend, which fetches
+    this JSON in parallel with /identity/badge/{did}.svg.
+
+    Returns 200 with `verified: true` for any registered DID, even if the
+    trust score is still withheld (insufficient endorsements). Returns 404
+    only when the DID is not registered at all.
+
+    Frontend contract (the fields the /verify/{did} page reads):
+      verified, tier, trust_score, grade, issued_at, expires_at,
+      vc_hash, badge_url. Additional fields (display_name, withheld,
+      total_ratings, average_rating, verify_url) are extras the page
+      ignores but other consumers (klaw gateway, etc.) may use.
+    """
+    from app.swarm.trust_score import compute_phase2_score, score_to_grade
+    did = validate_did(did)
+    if not db_pool:
+        raise HTTPException(503, "database not available")
+    async with db_pool.acquire() as conn:
+        agent = await conn.fetchrow(
+            "SELECT did, display_name, created_at FROM agents WHERE did = $1",
+            did,
+        )
+        if not agent:
+            raise HTTPException(404, "agent not registered")
+        rating_row = await conn.fetchrow(
+            "SELECT COALESCE(AVG(score), 0) AS avg_score, COUNT(*) AS total "
+            "FROM ratings WHERE to_did = $1",
+            did,
+        )
+        try:
+            ts = await compute_phase2_score(did, conn)
+        except Exception:
+            ts = {"score": None, "withheld": True}
+        await update_last_seen(did)
+
+    trust_score = ts.get("score")
+    grade = score_to_grade(trust_score) if trust_score is not None else None
+    tier = _BADGE_TIER_BY_GRADE.get(grade, "none")
+    issued_at = agent["created_at"].isoformat() if agent["created_at"] else None
+    return {
+        "did": did,
+        "verified": True,
+        "display_name": agent["display_name"],
+        "tier": tier,
+        "trust_score": trust_score,
+        "grade": grade,
+        # Registration timestamp — when the DID first entered MolTrust.
+        "issued_at": issued_at,
+        # Identity badges don't expire; they reflect current trust state.
+        # Frontend renders null as "—".
+        "expires_at": None,
+        # VC-hash storage is not yet wired through to the agents table —
+        # field is reserved so the frontend's data.vc_hash access doesn't
+        # throw, populated when the VC pipeline lands.
+        "vc_hash": None,
+        "withheld": ts.get("withheld", False),
+        "total_ratings": int(rating_row["total"]) if rating_row else 0,
+        "average_rating": round(float(rating_row["avg_score"]), 2)
+        if rating_row and rating_row["avg_score"] is not None
+        else 0.0,
+        "verify_url": f"https://moltrust.ch/verify/{did}",
+        "badge_url": f"https://api.moltrust.ch/identity/badge/{did}.svg",
+    }
+
 
 @app.get("/reputation/query/{did}")
 @limiter.limit("30/minute")
@@ -1368,6 +1495,104 @@ DID_WEB_DOCUMENT = {
 async def did_web_document(request: Request):
     return DID_WEB_DOCUMENT
 
+
+# SELECT clause used by both /identity/resolve and /identity/resolve-external
+# so they share the same column shape and the helper below can build a full document.
+_AGENT_DOC_COLUMNS = (
+    "did, display_name, platform, created_at, "
+    "wallet_address, wallet_chain, wallet_bound_at, "
+    "public_key_hex, key_anchor_tx, key_anchor_block"
+)
+
+
+def _build_did_document(row) -> dict:
+    """Build a W3C DID Document from an agents-table row.
+
+    Shared by /identity/resolve and /identity/resolve-external so both endpoints
+    return the same shape (verificationMethod/authentication/assertionMethod/service).
+    """
+    doc = {
+        "@context": [
+            "https://www.w3.org/ns/did/v1",
+            "https://w3id.org/security/suites/ed25519-2020/v1",
+        ],
+        "id": row["did"],
+        "controller": "did:web:api.moltrust.ch",
+        "metadata": {
+            "display_name": row["display_name"],
+            "platform": row["platform"],
+            "created": str(row["created_at"]),
+            "trust_provider": "MolTrust",
+        },
+    }
+    if row["public_key_hex"]:
+        key_id = f"{row['did']}#key-1"
+        doc["verificationMethod"] = [{
+            "id": key_id,
+            "type": "Ed25519VerificationKey2020",
+            "controller": row["did"],
+            "publicKeyHex": row["public_key_hex"],
+        }]
+        doc["authentication"] = [key_id]
+        doc["assertionMethod"] = [key_id]
+        if row["key_anchor_tx"]:
+            doc["metadata"]["keyAnchor"] = {
+                "chain": "base",
+                "tx": row["key_anchor_tx"],
+                "block": row["key_anchor_block"],
+            }
+    if row["wallet_address"]:
+        chain = row["wallet_chain"] or "base"
+        svc_type = "SolanaPaymentService" if chain == "solana" else "PaymentService"
+        currency = "USDC" if chain != "solana" else "SOL"
+        doc.setdefault("service", []).append({
+            "id": f"{row['did']}#payment",
+            "type": svc_type,
+            "serviceEndpoint": {
+                "address": row["wallet_address"],
+                "chain": chain,
+                "currency": currency,
+                "bound_at": row["wallet_bound_at"].isoformat() + "Z" if row["wallet_bound_at"] else None,
+            },
+        })
+    return doc
+
+
+async def _resolve_did_web_external(did: str) -> dict:
+    """Resolve an external did:web:* per W3C spec by fetching /.well-known/did.json.
+
+    Examples:
+      did:web:foo.com           -> https://foo.com/.well-known/did.json
+      did:web:foo.com:agents:x  -> https://foo.com/agents/x/did.json
+
+    Port encoding via percent-encoded colon is decoded.
+    """
+    if not did.startswith("did:web:"):
+        raise HTTPException(400, "Not a did:web identifier")
+    method_specific_id = did[len("did:web:"):]
+    if not method_specific_id:
+        raise HTTPException(400, "Empty did:web identifier")
+    parts = method_specific_id.split(":")
+    # Decode percent-encoded chars (e.g. %3A for : in port specs)
+    parts = [urllib.parse.unquote(p) for p in parts]
+    domain = parts[0]
+    if len(parts) == 1:
+        url = f"https://{domain}/.well-known/did.json"
+    else:
+        url = f"https://{domain}/{'/'.join(parts[1:])}/did.json"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(url, headers={"Accept": "application/did+ld+json, application/json"})
+    except httpx.RequestError as e:
+        raise HTTPException(404, f"didNotResolved: {e.__class__.__name__}")
+    if resp.status_code != 200:
+        raise HTTPException(404, f"didNotResolved: HTTP {resp.status_code}")
+    try:
+        return resp.json()
+    except ValueError:
+        raise HTTPException(502, "didDocument is not valid JSON")
+
+
 @app.get("/identity/resolve/{did:path}")
 @limiter.limit("30/minute")
 async def resolve_did(request: Request, did: str):
@@ -1379,59 +1604,14 @@ async def resolve_did(request: Request, did: str):
         if db_pool:
             async with db_pool.acquire() as conn:
                 row = await conn.fetchrow(
-                    "SELECT did, display_name, platform, created_at, wallet_address, wallet_chain, wallet_bound_at, public_key_hex, key_anchor_tx, key_anchor_block FROM agents WHERE did = $1", did
+                    f"SELECT {_AGENT_DOC_COLUMNS} FROM agents WHERE did = $1", did
                 )
                 if row:
                     await update_last_seen(did)
-                if row:
-                    doc = {
-                        "@context": [
-                            "https://www.w3.org/ns/did/v1",
-                            "https://w3id.org/security/suites/ed25519-2020/v1"
-                        ],
-                        "id": row["did"],
-                        "controller": "did:web:api.moltrust.ch",
-                        "metadata": {
-                            "display_name": row["display_name"],
-                            "platform": row["platform"],
-                            "created": str(row["created_at"]),
-                            "trust_provider": "MolTrust"
-                        }
-                    }
-                    if row["public_key_hex"]:
-                        key_id = f"{row['did']}#key-1"
-                        doc["verificationMethod"] = [{
-                            "id": key_id,
-                            "type": "Ed25519VerificationKey2020",
-                            "controller": row["did"],
-                            "publicKeyHex": row["public_key_hex"]
-                        }]
-                        doc["authentication"] = [key_id]
-                        doc["assertionMethod"] = [key_id]
-                        if row["key_anchor_tx"]:
-                            doc["metadata"]["keyAnchor"] = {
-                                "chain": "base",
-                                "tx": row["key_anchor_tx"],
-                                "block": row["key_anchor_block"],
-                            }
-                    if row["wallet_address"]:
-                        chain = row["wallet_chain"] or "base"
-                        svc_type = "SolanaPaymentService" if chain == "solana" else "PaymentService"
-                        currency = "USDC" if chain != "solana" else "SOL"
-                        doc.setdefault("service", []).append({
-                            "id": f"{row['did']}#payment",
-                            "type": svc_type,
-                            "serviceEndpoint": {
-                                "address": row["wallet_address"],
-                                "chain": chain,
-                                "currency": currency,
-                                "bound_at": row["wallet_bound_at"].isoformat() + "Z" if row["wallet_bound_at"] else None,
-                            }
-                        })
-                    return doc
+                    return _build_did_document(row)
         raise HTTPException(404, "DID not found")
     if did.startswith("did:web:"):
-        raise HTTPException(501, "External did:web resolution not yet supported")
+        return await _resolve_did_web_external(did)
     raise HTTPException(400, "Unsupported DID method")
 
 @app.get("/identity/key/{did:path}")
@@ -1610,7 +1790,7 @@ async def x402_verify(request: Request, did: str = Query(max_length=40)):
 
     # Log x402/verify call
     try:
-        caller_ip = request.client.host if request.client else None
+        caller_ip = _get_client_ip(request)
     except Exception:
         caller_ip = None
 
@@ -1988,7 +2168,7 @@ async def resolve_external_did(request: Request, external_did: str):
     # Fetch MolTrust DID document via internal resolve
     async with db_pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT did, display_name, platform, created_at, wallet_address, wallet_chain, wallet_bound_at FROM agents WHERE did = $1",
+            f"SELECT {_AGENT_DOC_COLUMNS} FROM agents WHERE did = $1",
             bridge["moltrust_did"]
         )
     if not row:
@@ -1999,17 +2179,7 @@ async def resolve_external_did(request: Request, external_did: str):
         "moltrust_did": bridge["moltrust_did"],
         "chain": bridge["chain"],
         "bridged_at": bridge["created_at"].isoformat() + "Z" if bridge["created_at"] else None,
-        "document": {
-            "@context": "https://www.w3.org/ns/did/v1",
-            "id": row["did"],
-            "controller": "did:web:api.moltrust.ch",
-            "metadata": {
-                "display_name": row["display_name"],
-                "platform": row["platform"],
-                "created": str(row["created_at"]),
-                "trust_provider": "MolTrust",
-            },
-        },
+        "document": _build_did_document(row),
     }
 
 
@@ -6547,6 +6717,7 @@ async def wallet_shadow_score(request: Request, address: str = Path(max_length=6
 
 # ── Billing Router ──
 app.include_router(billing_router)
+app.include_router(billing_admin_router)
 app.include_router(test_harness_router)
 
 # ── Attestations Endpoint ─────────────────────────────────────────────────────
@@ -6710,7 +6881,7 @@ async def test_harness_endorse(request: Request, body: TestHarnessEndorseRequest
                 "INSERT INTO request_log (method, path, ip, api_key_prefix, response_status, logged_at) "
                 "VALUES ($1, $2, $3, $4, $5, $6)",
                 "POST", "/test-harness/endorse",
-                request.client.host if request.client else "unknown",
+                _get_client_ip(request),
                 f"{partner_label}:{api_key[:12]}...",
                 200, now
             )
