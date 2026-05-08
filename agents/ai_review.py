@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-MolTrust Multi-AI Review Pipeline
-Sendet MD-Dokumente an OpenAI + Gemini, synthetisiert via Claude, Telegram-Alert.
+MolTrust Multi-AI Review Pipeline v2
+Sendet MD-Dokumente an OpenAI + Gemini + Perplexity, synthetisiert via Claude, Telegram-Alert.
 
 Usage:
   python3 ai_review.py <path/to/document.md> [--label "Security Konzept v1"] [--mode security|technical|whitepaper]
@@ -29,21 +29,29 @@ def load_secrets():
                 secrets[k.strip()] = v.strip()
     # Env vars haben Vorrang
     for key in ["OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY",
-                "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]:
+                "PERPLEXITY_API_KEY", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]:
         if os.environ.get(key):
             secrets[key] = os.environ[key]
     return secrets
 
 SECRETS = load_secrets()
 
-OPENAI_KEY     = SECRETS.get("OPENAI_API_KEY", "")
-GEMINI_KEY     = SECRETS.get("GEMINI_API_KEY", "")
-ANTHROPIC_KEY  = SECRETS.get("ANTHROPIC_API_KEY", "")
-TG_TOKEN       = SECRETS.get("TELEGRAM_BOT_TOKEN", "")
-TG_CHAT_ID     = SECRETS.get("TELEGRAM_CHAT_ID", "")
+OPENAI_KEY      = SECRETS.get("OPENAI_API_KEY", "")
+GEMINI_KEY      = SECRETS.get("GEMINI_API_KEY", "")
+ANTHROPIC_KEY   = SECRETS.get("ANTHROPIC_API_KEY", "")
+PERPLEXITY_KEY  = SECRETS.get("PERPLEXITY_API_KEY", "")
+TG_TOKEN        = SECRETS.get("TELEGRAM_BOT_TOKEN", "")
+TG_CHAT_ID      = SECRETS.get("TELEGRAM_CHAT_ID", "")
 
 OUTPUT_DIR = Path.home() / "moltstack" / "reviews"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Limits ───────────────────────────────────────────────────────────────────
+INPUT_CHAR_LIMIT = 60000       # Gemini 2.5 Flash: 1M ctx, GPT-4o: 128k — 60k chars is safe
+GPT4O_MAX_TOKENS = 4000        # v1 was 2000 — truncated long reviews
+GEMINI_MAX_TOKENS = 8000       # v1 was 4000 — caused incomplete Gemini reviews
+PERPLEXITY_MAX_TOKENS = 4000
+CLAUDE_MAX_TOKENS = 4000       # v1 was 3000 — more room for 3-reviewer synthesis
 
 # ── Review-Prompts je Modus ──────────────────────────────────────────────────
 REVIEW_PROMPTS = {
@@ -84,26 +92,38 @@ Strukturiere deine Antwort exakt so:
 Konstruktiv aber direkt."""
 }
 
-SYNTHESIS_PROMPT = """Du bist Lead-Reviewer bei MolTrust. Du hast Reviews von OpenAI (GPT-4o) und Google (Gemini) zu demselben Dokument erhalten.
+PERPLEXITY_EXTRA = {
+    "security": "\n\nZusätzlich: Recherchiere aktuelle CVEs und bekannte Angriffsvektoren die für dieses System relevant sind. Prüfe ob die referenzierten Standards und Frameworks aktuell und korrekt zitiert sind.",
+    "technical": "\n\nZusätzlich: Prüfe ob die referenzierten Standards (W3C, IETF, DIF) korrekt und aktuell zitiert sind. Recherchiere ob es neuere Versionen oder relevante Ergänzungen gibt.",
+    "whitepaper": "\n\nZusätzlich: Prüfe ob alle zitierten Quellen existieren, korrekt zitiert sind, und ob es wichtige aktuelle Arbeiten gibt die fehlen. Recherchiere den aktuellen Stand der referenzierten Projekte und Frameworks."
+}
 
-Deine Aufgabe: Synthetisiere beide Reviews in ein klares Entscheidungsdokument für den Gründer.
+SYNTHESIS_PROMPT = """Du bist Lead-Reviewer bei MolTrust. Du hast Reviews von drei unabhängigen AI-Modellen zu demselben Dokument erhalten:
+- GPT-4o (OpenAI) — technische Analyse
+- Gemini 2.5 Flash (Google) — technische Analyse
+- Perplexity Sonar Pro — Analyse mit Echtzeit-Web-Recherche (Referenz-Checks, Aktualität)
+
+Deine Aufgabe: Synthetisiere alle drei Reviews in ein klares Entscheidungsdokument für den Gründer.
 
 Strukturiere exakt so:
 
 # Synthesis Review — {label}
 **Datum:** {date}
-**Reviewer:** GPT-4o + Gemini 1.5 Pro → Synthese via Claude
+**Reviewer:** GPT-4o + Gemini 2.5 Flash + Perplexity Sonar Pro → Synthese via Claude
 
 ---
 
 ## 🔴 Konsens: Kritische Punkte
-(Punkte, die BEIDE Reviews als Problem sehen)
+(Punkte, die mindestens ZWEI von drei Reviews als Problem sehen)
 
 ## 🟡 Divergenz: Unterschiedliche Einschätzungen
-(Wo GPT-4o und Gemini sich widersprechen — mit kurzer Bewertung wer Recht hat)
+(Wo die Reviewer sich widersprechen — mit kurzer Bewertung wer Recht hat)
+
+## 🔵 Perplexity Fact-Check
+(Was hat Perplexity's Web-Recherche ergeben? Falsche Referenzen? Fehlende aktuelle Quellen? Veraltete Standards?)
 
 ## 🟢 Konsens: Stärken
-(Punkte, die BEIDE positiv bewerten)
+(Punkte, die mindestens ZWEI von drei positiv bewerten)
 
 ## 📋 Priorisierte Aktionsliste
 (Konkrete TODOs, nach Dringlichkeit sortiert — max. 10 Items)
@@ -113,11 +133,14 @@ Klares Votum: FREIGEBEN / ÜBERARBEITEN / GRUNDLEGEND ÜBERDENKEN — mit 2-Satz
 
 ---
 
-### GPT-4o Review (Zusammenfassung)
-{openai_summary}
+GPT-4o Review:
+{openai_review}
 
-### Gemini Review (Zusammenfassung)
-{gemini_summary}
+Gemini Review:
+{gemini_review}
+
+Perplexity Review:
+{perplexity_review}
 """
 
 # ── API Calls ────────────────────────────────────────────────────────────────
@@ -130,7 +153,7 @@ async def call_openai(client: httpx.AsyncClient, document: str, mode: str) -> di
     system_prompt = REVIEW_PROMPTS[mode]
     payload = {
         "model": "gpt-4o",
-        "max_tokens": 2000,
+        "max_tokens": GPT4O_MAX_TOKENS,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Hier ist das Dokument zur Review:\n\n{document}"}
@@ -154,34 +177,77 @@ async def call_openai(client: httpx.AsyncClient, document: str, mode: str) -> di
 
 
 async def call_gemini(client: httpx.AsyncClient, document: str, mode: str) -> dict:
-    """Gemini 1.5 Pro Review Call"""
+    """Gemini 2.5 Flash Review Call — with retry on 503"""
     if not GEMINI_KEY:
-        return {"model": "Gemini 1.5 Pro", "content": "ERROR: GEMINI_API_KEY nicht gesetzt", "error": True}
+        return {"model": "Gemini 2.5 Flash", "content": "ERROR: GEMINI_API_KEY nicht gesetzt", "error": True}
 
     system_prompt = REVIEW_PROMPTS[mode]
     combined_prompt = f"{system_prompt}\n\nHier ist das Dokument zur Review:\n\n{document}"
 
     payload = {
         "contents": [{"parts": [{"text": combined_prompt}]}],
-        "generationConfig": {"maxOutputTokens": 4000, "temperature": 0.3}
+        "generationConfig": {"maxOutputTokens": GEMINI_MAX_TOKENS, "temperature": 0.3}
     }
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
 
+    last_error = None
+    for attempt in range(3):
+        try:
+            resp = await client.post(url, json=payload, timeout=300)
+            if resp.status_code == 503 and attempt < 2:
+                wait = 10 * (attempt + 1)
+                print(f"   Gemini 503 — retry {attempt+1}/2 in {wait}s...")
+                await asyncio.sleep(wait)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["candidates"][0]["content"]["parts"][0]["text"]
+            tokens = data.get("usageMetadata", {}).get("totalTokenCount", "?")
+            return {"model": "Gemini 2.5 Flash", "content": content, "tokens": tokens, "error": False}
+        except Exception as e:
+            last_error = e
+            if attempt < 2:
+                wait = 10 * (attempt + 1)
+                print(f"   Gemini error — retry {attempt+1}/2 in {wait}s...")
+                await asyncio.sleep(wait)
+    return {"model": "Gemini 2.5 Flash", "content": f"ERROR after 3 attempts: {last_error}", "error": True}
+
+
+async def call_perplexity(client: httpx.AsyncClient, document: str, mode: str) -> dict:
+    """Perplexity Sonar Pro Review Call — with web search"""
+    if not PERPLEXITY_KEY:
+        return {"model": "Perplexity Sonar Pro", "content": "ERROR: PERPLEXITY_API_KEY nicht gesetzt", "error": True}
+
+    system_prompt = REVIEW_PROMPTS[mode] + PERPLEXITY_EXTRA[mode]
+    payload = {
+        "model": "sonar-pro",
+        "max_tokens": PERPLEXITY_MAX_TOKENS,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Hier ist das Dokument zur Review:\n\n{document}"}
+        ]
+    }
+
     try:
-        resp = await client.post(url, json=payload, timeout=120)
+        resp = await client.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers={"Authorization": f"Bearer {PERPLEXITY_KEY}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=180
+        )
         resp.raise_for_status()
         data = resp.json()
-        content = data["candidates"][0]["content"]["parts"][0]["text"]
-        tokens = data.get("usageMetadata", {}).get("totalTokenCount", "?")
-        return {"model": "Gemini 1.5 Pro", "content": content, "tokens": tokens, "error": False}
+        content = data["choices"][0]["message"]["content"]
+        tokens = data.get("usage", {}).get("total_tokens", "?")
+        return {"model": "Perplexity Sonar Pro", "content": content, "tokens": tokens, "error": False}
     except Exception as e:
-        return {"model": "Gemini 1.5 Pro", "content": f"ERROR: {e}", "error": True}
+        return {"model": "Perplexity Sonar Pro", "content": f"ERROR: {e}", "error": True}
 
 
 async def call_claude_synthesis(client: httpx.AsyncClient, openai_result: dict,
-                                 gemini_result: dict, label: str) -> str:
-    """Claude synthetisiert beide Reviews"""
+                                 gemini_result: dict, perplexity_result: dict, label: str) -> str:
+    """Claude synthetisiert alle drei Reviews"""
     if not ANTHROPIC_KEY:
         return "ERROR: ANTHROPIC_API_KEY nicht gesetzt"
 
@@ -189,13 +255,14 @@ async def call_claude_synthesis(client: httpx.AsyncClient, openai_result: dict,
     user_prompt = SYNTHESIS_PROMPT.format(
         label=label,
         date=date_str,
-        openai_summary=openai_result["content"],
-        gemini_summary=gemini_result["content"]
+        openai_review=openai_result["content"],
+        gemini_review=gemini_result["content"],
+        perplexity_review=perplexity_result["content"]
     )
 
     payload = {
         "model": "claude-sonnet-4-20250514",
-        "max_tokens": 3000,
+        "max_tokens": CLAUDE_MAX_TOKENS,
         "messages": [{"role": "user", "content": user_prompt}]
     }
 
@@ -242,30 +309,34 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
     char_count = len(document)
 
     print(f"\n{'='*60}")
-    print(f"🚀 MolTrust AI Review Pipeline")
+    print(f"🚀 MolTrust AI Review Pipeline v2")
     print(f"   Dokument : {doc_path.name} ({word_count} Wörter)")
     print(f"   Label    : {label}")
     print(f"   Modus    : {mode}")
+    print(f"   Reviewer : GPT-4o + Gemini 2.5 Flash + Perplexity Sonar Pro")
     print(f"{'='*60}\n")
 
-    # Dokument auf 15k chars kürzen falls nötig (Token-Limit Schutz)
-    if char_count > 25000:
-        document = document[:25000] + "\n\n[... Dokument gekürzt für Review ...]"
-        print(f"⚠️  Dokument auf 25.000 Zeichen gekürzt (war {char_count})\n")
+    if char_count > INPUT_CHAR_LIMIT:
+        document = document[:INPUT_CHAR_LIMIT] + "\n\n[... Dokument gekürzt für Review ...]"
+        print(f"⚠️  Dokument auf {INPUT_CHAR_LIMIT:,} Zeichen gekürzt (war {char_count:,})\n")
 
     async with httpx.AsyncClient() as client:
-        # 1. Parallel Reviews
-        print("📤 Sende an GPT-4o + Gemini (parallel)...")
+        # 1. Parallel Reviews — all three
+        print("📤 Sende an GPT-4o + Gemini + Perplexity (parallel)...")
         openai_task = call_openai(client, document, mode)
         gemini_task = call_gemini(client, document, mode)
-        openai_result, gemini_result = await asyncio.gather(openai_task, gemini_task)
+        perplexity_task = call_perplexity(client, document, mode)
+        openai_result, gemini_result, perplexity_result = await asyncio.gather(
+            openai_task, gemini_task, perplexity_task
+        )
 
-        print(f"   GPT-4o   : {'✅' if not openai_result['error'] else '❌'} ({openai_result.get('tokens', '?')} Tokens)")
-        print(f"   Gemini   : {'✅' if not gemini_result['error'] else '❌'} ({gemini_result.get('tokens', '?')} Tokens)")
+        print(f"   GPT-4o      : {'✅' if not openai_result['error'] else '❌'} ({openai_result.get('tokens', '?')} Tokens)")
+        print(f"   Gemini      : {'✅' if not gemini_result['error'] else '❌'} ({gemini_result.get('tokens', '?')} Tokens)")
+        print(f"   Perplexity  : {'✅' if not perplexity_result['error'] else '❌'} ({perplexity_result.get('tokens', '?')} Tokens)")
 
         # 2. Synthesis via Claude
         print("\n🧠 Synthetisiere via Claude...")
-        synthesis = await call_claude_synthesis(client, openai_result, gemini_result, label)
+        synthesis = await call_claude_synthesis(client, openai_result, gemini_result, perplexity_result, label)
         print("   Synthesis : ✅")
 
         # 3. Output-File schreiben
@@ -277,6 +348,7 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
 **Generiert:** {datetime.datetime.now().strftime("%Y-%m-%d %H:%M UTC")}
 **Quelle:** {doc_path.name}
 **Modus:** {mode}
+**Reviewer:** GPT-4o + Gemini 2.5 Flash + Perplexity Sonar Pro → Claude Synthesis
 
 ---
 
@@ -294,9 +366,16 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
 </details>
 
 <details>
-<summary>Gemini 1.5 Pro Raw Review</summary>
+<summary>Gemini 2.5 Flash Raw Review</summary>
 
 {gemini_result['content']}
+
+</details>
+
+<details>
+<summary>Perplexity Sonar Pro Raw Review</summary>
+
+{perplexity_result['content']}
 
 </details>
 """
@@ -304,16 +383,16 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
         print(f"\n💾 Gespeichert: {output_path}")
 
         # 4. Telegram Alert
-        errors = [r["model"] for r in [openai_result, gemini_result] if r["error"]]
-        status = "✅ Vollständig" if not errors else f"⚠️ Fehler bei: {', '.join(errors)}"
+        errors = [r["model"] for r in [openai_result, gemini_result, perplexity_result] if r["error"]]
+        status = "✅ Vollständig (3/3)" if not errors else f"⚠️ Fehler bei: {', '.join(errors)}"
 
         tg_msg = (
-            f"🔍 *AI Review abgeschlossen*\n"
+            f"🔍 *AI Review v2 abgeschlossen*\n"
             f"Label: `{label}`\n"
             f"Modus: `{mode}`\n"
             f"Status: {status}\n"
             f"File: `{output_path.name}`\n\n"
-            f"Freigabe-Empfehlung folgt im Dokument."
+            f"Reviewer: GPT-4o + Gemini + Perplexity → Claude"
         )
         await send_telegram(client, tg_msg)
         print("📱 Telegram Alert gesendet\n")
@@ -325,7 +404,7 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MolTrust Multi-AI Review Pipeline")
+    parser = argparse.ArgumentParser(description="MolTrust Multi-AI Review Pipeline v2")
     parser.add_argument("document", help="Pfad zum MD-Dokument")
     parser.add_argument("--label", default="", help="Bezeichnung für den Review")
     parser.add_argument("--mode", choices=["security", "technical", "whitepaper"],
