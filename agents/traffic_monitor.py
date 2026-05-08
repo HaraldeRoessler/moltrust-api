@@ -1,94 +1,191 @@
 #!/usr/bin/env python3
 """
-New External Caller Alert — runs hourly via cron.
-Alerts via Telegram when a new IP makes >10 requests in 24h.
+Traffic Monitor v2 — Persistent IP Tracking
+Solves the "25-30 New External Callers" noise by tracking truly new IPs
+across runs via a state file.
 """
-import os, json, asyncio, logging
-from datetime import datetime, timezone
-from pathlib import Path
-from urllib.request import Request, urlopen
 
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
-log = logging.getLogger("traffic_monitor")
+import psycopg2
+import requests
+import json
+from datetime import datetime
+import os
 
-TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-TRUSTED_PREFIXES = [
-    "127.", "::1", "10.", "172.16.", "192.168.",
-    "46.225.175.",  # Our Hetzner server
-]
-
-KNOWN_CALLERS = {
-    "74.220.48.244": "Render.com Uptime",
-    "172.212.171.144": "Upptime Status",
-}
+# Configuration
+KNOWN_IPS_FILE = "/home/moltstack/known_ips.txt"
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+DB_PASSWORD = os.getenv('MOLTSTACK_DB_PW', '')
+TRUSTED_PREFIXES = ['127.', '::1', '10.', '172.16.', '192.168.', '88.99.', '116.202.', '46.225.175.']
 
 
-def send_telegram(msg: str):
-    if not TG_TOKEN or not TG_CHAT:
-        log.warning("Telegram not configured")
-        return
+def load_known_ips():
+    """Load previously seen IPs from persistent state file"""
     try:
-        data = json.dumps({"chat_id": TG_CHAT, "text": msg, "parse_mode": "HTML"}).encode()
-        req = Request(
-            f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-            data=data, headers={"Content-Type": "application/json"},
+        with open(KNOWN_IPS_FILE, 'r') as f:
+            return set(line.strip() for line in f if line.strip())
+    except FileNotFoundError:
+        return set()
+
+
+def save_known_ips(ips):
+    """Save all known IPs to persistent state file"""
+    with open(KNOWN_IPS_FILE, 'w') as f:
+        for ip in sorted(ips):
+            f.write(f"{ip}\n")
+
+
+def is_trusted_ip(ip):
+    """Check if IP is from trusted sources (localhost, private ranges, Hetzner)"""
+    return any(ip.startswith(prefix) for prefix in TRUSTED_PREFIXES)
+
+
+def get_external_callers():
+    """Get external callers with >10 requests in last 25 hours"""
+    conn = psycopg2.connect(
+        host="localhost",
+        database="moltstack",
+        user="moltstack",
+        password=DB_PASSWORD,
+    )
+
+    query = """
+    SELECT
+        ip,
+        COUNT(*) as request_count,
+        MAX(ts) as last_seen,
+        MIN(ts) as first_seen,
+        (array_agg(DISTINCT user_agent))[1] as user_agent,
+        (array_agg(DISTINCT ip_org) FILTER (WHERE ip_org IS NOT NULL))[1] as ip_org
+    FROM request_log
+    WHERE ts > NOW() - INTERVAL '25 hours'
+        AND ip IS NOT NULL
+    GROUP BY ip
+    HAVING COUNT(*) > 10
+    ORDER BY COUNT(*) DESC
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(query)
+        results = cur.fetchall()
+
+    conn.close()
+
+    external_callers = []
+    for row in results:
+        ip, count, last_seen, first_seen, user_agent, ip_org = row
+        if not is_trusted_ip(ip):
+            external_callers.append({
+                'ip': ip,
+                'count': count,
+                'last_seen': last_seen,
+                'first_seen': first_seen,
+                'user_agent': user_agent or 'Unknown',
+                'ip_org': ip_org or '',
+            })
+
+    return external_callers
+
+
+def categorize_callers(current_callers, known_ips):
+    """Categorize callers into truly new vs recurring"""
+    current_ips = {caller['ip'] for caller in current_callers}
+    truly_new_ips = current_ips - known_ips
+    recurring_ips = current_ips & known_ips
+
+    new_callers = [c for c in current_callers if c['ip'] in truly_new_ips]
+    recurring_callers = [c for c in current_callers if c['ip'] in recurring_ips]
+
+    return new_callers, recurring_callers
+
+
+def format_telegram_message(new_callers, recurring_callers):
+    """Format Telegram message (Markdown v1: *bold*, no **)"""
+    total = len(new_callers) + len(recurring_callers)
+    new_count = len(new_callers)
+
+    if new_count == 0 and len(recurring_callers) <= 5:
+        return None
+
+    lines = [
+        "🔍 *External Traffic Report*",
+        "",
+        f"*Total Active:* {total} callers",
+        f"*Truly New:* {new_count}",
+        f"*Recurring:* {len(recurring_callers)}",
+        "",
+    ]
+
+    if new_callers:
+        lines.append(f"🚨 *NEW External Callers ({new_count})*")
+        lines.append("")
+        for caller in new_callers:
+            org = f" ({caller['ip_org']})" if caller['ip_org'] else ""
+            ua_short = caller['user_agent'][:50]
+            if len(caller['user_agent']) > 50:
+                ua_short += "..."
+            lines.append(f"`{caller['ip']}`{org}")
+            lines.append(f"{caller['count']} reqs | UA: {ua_short}")
+            lines.append("")
+
+    if recurring_callers and new_count > 0:
+        lines.append("🔄 *Top Recurring Callers*")
+        lines.append("")
+        top_recurring = sorted(recurring_callers, key=lambda x: x['count'], reverse=True)[:5]
+        for caller in top_recurring:
+            org = f" ({caller['ip_org']})" if caller['ip_org'] else ""
+            lines.append(f"`{caller['ip']}`{org} — {caller['count']} reqs")
+
+    return "\n".join(lines)
+
+
+def send_telegram_alert(message):
+    """Send alert to Telegram"""
+    if not message or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            data={
+                'chat_id': TELEGRAM_CHAT_ID,
+                'text': message,
+                'parse_mode': 'Markdown',
+            },
+            timeout=10,
         )
-        urlopen(req, timeout=10)
+        return response.status_code == 200
     except Exception as e:
-        log.error("Telegram failed: %s", e)
+        print(f"Telegram send error: {e}")
+        return False
 
 
-async def main():
-    import asyncpg
+def main():
+    """Main traffic monitor with persistent tracking"""
+    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] Traffic Monitor v2 starting")
 
-    log.info("Checking for new external callers...")
-    conn = await asyncpg.connect(user="moltstack", database="moltstack")
+    known_ips = load_known_ips()
+    print(f"  Known IPs from state file: {len(known_ips)}")
 
-    try:
-        new_callers = await conn.fetch("""
-            WITH recent AS (
-                SELECT ip, COUNT(*) as calls,
-                       MAX(ts) as last_seen,
-                       (array_agg(user_agent ORDER BY ts DESC))[1] as ua,
-                       (array_agg(ip_org ORDER BY ts DESC))[1] as org
-                FROM request_log
-                WHERE ts > NOW() - INTERVAL '25 hours'
-                  AND ip NOT IN ('127.0.0.1', '::1')
-                GROUP BY ip
-                HAVING COUNT(*) > 10
-            ),
-            known AS (
-                SELECT DISTINCT ip FROM request_log
-                WHERE ts < NOW() - INTERVAL '25 hours'
-            )
-            SELECT r.ip, r.calls, r.last_seen, r.ua, r.org
-            FROM recent r
-            LEFT JOIN known k ON k.ip = r.ip
-            WHERE k.ip IS NULL
-        """)
+    current_callers = get_external_callers()
+    print(f"  Active external callers (>10 reqs/25h): {len(current_callers)}")
 
-        # Filter out trusted prefixes
-        new_callers = [
-            c for c in new_callers
-            if not any(c["ip"].startswith(p) for p in TRUSTED_PREFIXES)
-        ]
+    new_callers, recurring_callers = categorize_callers(current_callers, known_ips)
+    print(f"  Truly new: {len(new_callers)}, Recurring: {len(recurring_callers)}")
 
-        if new_callers:
-            label_map = KNOWN_CALLERS.copy()
-            msg = f"<b>New External Callers</b> ({len(new_callers)})\n\n"
-            for c in new_callers:
-                label = label_map.get(c["ip"], c["org"] or "Unknown")
-                msg += f"  {c['ip']} ({label})\n"
-                msg += f"  {c['calls']} requests | UA: {(c['ua'] or '')[:60]}\n\n"
-            send_telegram(msg)
-            log.info("Alerted %d new callers", len(new_callers))
-        else:
-            log.info("No new external callers (>10 req/24h)")
-    finally:
-        await conn.close()
+    # Update known IPs
+    all_current_ips = {caller['ip'] for caller in current_callers}
+    updated_known_ips = known_ips | all_current_ips
+    save_known_ips(updated_known_ips)
+    print(f"  State file updated: {len(updated_known_ips)} total known IPs")
+
+    message = format_telegram_message(new_callers, recurring_callers)
+    if message:
+        success = send_telegram_alert(message)
+        print(f"  Telegram alert sent: {success}")
+    else:
+        print(f"  No alert — quiet period")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
