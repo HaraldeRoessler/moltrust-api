@@ -79,3 +79,6 @@ logs/
 drafts/
 moltbook/state.json
 agents/workspace/*/MEMORY.md
+
+# Pre-USPTO filing — no public disclosure until grace period closes (~March 2027)
+docs/patent_evaluation.md
