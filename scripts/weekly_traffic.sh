@@ -1,8 +1,13 @@
 #!/bin/bash
 # Weekly Traffic Report — Montag 08:00 UTC
+set +x  # Disable trace mode unconditionally — protects against caller-supplied -x flag dumping secrets
 set -eo pipefail
 
-source /home/moltstack/.moltrust_secrets
+# Load only the secrets we need (TELEGRAM_*) instead of sourcing the full file.
+# This limits trace exposure if -x is ever forced by external tooling.
+SECRETS_FILE=/home/moltstack/.moltrust_secrets
+TELEGRAM_BOT_TOKEN=$(grep '^TELEGRAM_BOT_TOKEN=' "$SECRETS_FILE" | cut -d= -f2- | tr -d '"')
+TELEGRAM_CHAT_ID=$(grep '^TELEGRAM_CHAT_ID=' "$SECRETS_FILE" | cut -d= -f2- | tr -d '"')
 
 LOG="/var/log/nginx/access.log"
 STATS_LOG="/home/moltstack/moltstack/logs/weekly_traffic.log"
@@ -31,6 +36,17 @@ TOP_UA=$(awk -F'"' '{print $6}' $LOG | sort | uniq -c | sort -rn | head -5)
 # Top profiles
 TOP_PROFILES=$(grep '/mcp.*profile=' $LOG 2>/dev/null | grep -o 'profile=[^& ]*' | sort | uniq -c | sort -rn | head -5)
 
+# LLM Visibility tracking (added 2026-05-08, Phase 5)
+# Counts hits from LLM training/retrieval crawlers per robots.txt whitelist
+LLM_BOTS=$(grep -ciE "GPTBot|ChatGPT-User|OAI-SearchBot|ClaudeBot|anthropic-ai|Claude-Web|Google-Extended|Applebot-Extended|PerplexityBot|cohere-ai|CCBot" $LOG 2>/dev/null || echo 0)
+TOP_LLM_BOT=$(grep -iE "GPTBot|ChatGPT-User|OAI-SearchBot|ClaudeBot|anthropic-ai|Claude-Web|Google-Extended|Applebot-Extended|PerplexityBot|cohere-ai|CCBot" $LOG | awk -F'"' '{print $6}' | awk '{print $1}' | sort | uniq -c | sort -rn | head -3)
+LLMS_TXT_HITS=$(grep -cE '/llms\.txt|/api-llms\.txt' $LOG 2>/dev/null || echo 0)
+AGENT_CARD_HITS=$(grep -c '/.well-known/agent-card.json' $LOG 2>/dev/null || echo 0)
+
+# A2A Discovery probers (specialized A2A/ERC-8004 ecosystem aggregators)
+A2A_PROBERS=$(grep -ciE "8004scan|ERC-8004-Prober|Waggle" $LOG 2>/dev/null || echo 0)
+TOP_A2A_PROBER=$(grep -iE "8004scan|ERC-8004-Prober|Waggle" $LOG | awk -F'"' '{print $6}' | awk '{print $1}' | sort | uniq -c | sort -rn | head -3)
+
 # Build message
 MSG="📈 <b>Weekly Traffic Report</b>
 
@@ -48,6 +64,18 @@ $(echo "$TOP_ENDPOINTS" | head -5 | awk '{printf "  %s %s\n", $1, $2}')
 
 <b>Top Profiles:</b>
 $(echo "$TOP_PROFILES" | head -3 | awk '{printf "  %s %s\n", $1, $2}')
+
+<b>LLM Visibility:</b>
+LLM Bot Hits: ${LLM_BOTS}
+llms.txt + api-llms.txt: ${LLMS_TXT_HITS}
+agent-card.json: ${AGENT_CARD_HITS}
+
+<b>Top LLM Bots:</b>
+$(echo "$TOP_LLM_BOT" | awk '{printf "  %s %s\n", $1, $2}')
+
+<b>A2A Discovery Probers:</b>
+A2A/ERC-8004 ecosystem hits: ${A2A_PROBERS}
+$(echo "$TOP_A2A_PROBER" | awk '{printf "  %s %s\n", $1, $2}')
 
 $(date -u +'%Y-%m-%d %H:%M UTC')"
 
