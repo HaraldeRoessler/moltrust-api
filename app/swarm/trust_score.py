@@ -356,8 +356,17 @@ async def _write_cache(
     cross_vertical_bonus: float = 0,
     computation_method: str = "phase2"
 ) -> None:
-    """Cache-Eintrag schreiben oder aktualisieren."""
+    """Cache-Eintrag schreiben oder aktualisieren. Emits CAEP trust_score_change on >=10pt delta."""
     valid_until = now + timedelta(hours=CACHE_TTL_HOURS)
+
+    # Read old score for CAEP delta detection (raw value: -1.0 means previously withheld)
+    old_row = await conn.fetchrow(
+        "SELECT score FROM trust_score_cache WHERE did = $1", did
+    )
+    old_score = old_row["score"] if old_row else None
+    if old_score is not None and old_score < 0:
+        old_score = None  # withheld sentinel
+
     await conn.execute(
         """
         INSERT INTO trust_score_cache
@@ -385,3 +394,24 @@ async def _write_cache(
         cross_vertical_bonus,
         computation_method
     )
+
+    # CAEP: emit trust_score_change on >=10pt delta (skip None transitions)
+    if old_score is not None and score is not None:
+        delta = abs(score - old_score)
+        if delta >= 10.0:
+            try:
+                from app.caep import emit_caep_event
+                await emit_caep_event(
+                    conn, did, "trust_score_change",
+                    {
+                        "old_score": round(old_score, 2),
+                        "new_score": round(score, 2),
+                        "delta": round(score - old_score, 2),
+                        "reason": "recompute",
+                        "computed_at": now.isoformat(),
+                    },
+                )
+            except Exception:
+                # Never let CAEP emission break score recompute
+                import logging
+                logging.getLogger("trust_score").exception("CAEP emit failed for %s", did)

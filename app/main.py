@@ -1148,6 +1148,7 @@ async def get_trust_score(did: str):
                 "endorser_count": 0, "withheld": False,
                 "flags": ["revoked"], "flag_count": 1,
                 "computed_at": None, "cache_valid_until": None,
+                "valid_until": None,  # CAEP alias for cache_valid_until
             }
         try:
             result = await compute_phase2_score(did, conn)
@@ -1156,7 +1157,7 @@ async def get_trust_score(did: str):
                 "FROM trust_score_cache WHERE did = $1", did
             )
             flags = await compute_flags(did, result["score"] or 0, conn) if not result["withheld"] else []
-            return {
+            score_response = {
                 "did": did,
                 "trust_score": result["score"],
                 "grade": score_to_grade(result["score"]),
@@ -1184,6 +1185,20 @@ async def get_trust_score(did: str):
                     "cache_valid_seconds": int((cached["cache_valid_until"] - cached["computed_at"]).total_seconds()) if cached else 3600,
                 },
             }
+            # CAEP: alias valid_until = cache_valid_until (keep both, non-breaking)
+            score_response["valid_until"] = score_response["cache_valid_until"]
+            # CAEP: sign deterministic minimal payload with registry key
+            if score_response["computed_at"] and score_response["valid_until"]:
+                from app.signature import sign_payload, build_score_signing_payload
+                signing_payload = build_score_signing_payload(
+                    did=score_response["did"],
+                    trust_score=score_response["trust_score"],
+                    computed_at=score_response["computed_at"],
+                    valid_until=score_response["valid_until"],
+                    policy_version=score_response["evaluation_context"]["policy_version"],
+                )
+                score_response["registry_signature"] = sign_payload(signing_payload)
+            return score_response
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -6636,6 +6651,9 @@ async def wallet_shadow_score(request: Request, address: str = Path(max_length=6
 app.include_router(billing_router)
 app.include_router(billing_admin_router)
 app.include_router(test_harness_router)
+
+from app.caep import router as caep_router
+app.include_router(caep_router)
 
 # ── Attestations Endpoint ─────────────────────────────────────────────────────
 
