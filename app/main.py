@@ -479,6 +479,26 @@ def verify_api_key(x_api_key: str = Header(alias="X-API-Key")):
         raise HTTPException(403, "Invalid API key")
     return x_api_key
 
+
+def verify_api_key_or_did(
+    request: Request,
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    x_moltrust_did: str | None = Header(None, alias="X-MolTrust-DID"),
+) -> dict:
+    """Auth helper: accepts either API key OR DID header. At least one required."""
+    if x_api_key:
+        if len(x_api_key) > 128:
+            raise HTTPException(401, "Invalid API key")
+        if x_api_key in API_KEYS:
+            return {"auth_method": "api_key", "key_id": x_api_key}
+        raise HTTPException(401, "Invalid API key")
+    if x_moltrust_did:
+        if not DID_PATTERN.match(x_moltrust_did):
+            raise HTTPException(401, "Invalid DID format")
+        return {"auth_method": "did", "did": x_moltrust_did}
+    raise HTTPException(401, "Authentication required: provide X-API-Key OR X-MolTrust-DID header")
+
+
 # --- DID-Wallet Binding: Nonce helpers ---
 NONCE_SECRET = os.getenv("NONCE_SECRET", "")
 
@@ -3013,6 +3033,122 @@ async def credits_deposit_info(request: Request):
             "4. Credits are granted instantly after verification",
         ],
     }
+
+
+# Helper: lazy-load + cache public agent card
+_AGENT_CARD_CACHE = None
+def _load_public_agent_card():
+    global _AGENT_CARD_CACHE
+    if _AGENT_CARD_CACHE is None:
+        with open("/var/www/html/.well-known/agent-card.json", "r") as f:
+            _AGENT_CARD_CACHE = json.load(f)
+    return _AGENT_CARD_CACHE
+
+
+@app.get("/extendedAgentCard")
+@limiter.limit("60/minute")
+async def extended_agent_card(
+    request: Request,
+    auth: dict = Depends(verify_api_key_or_did),
+):
+    """A2A v1.0 ExtendedAgentCard. Returns public card + paid skills + x402 pricing + moltguard details."""
+
+    # Load public card from static file (cached on first read)
+    public_card = _load_public_agent_card()
+
+    # Extended skills
+    extended_skills = [
+        {
+            "id": "endorsement",
+            "name": "Trust Endorsement",
+            "description": "Create a trust edge between two DIDs (signed endorsement). Free for authenticated agents.",
+            "tags": ["endorsement", "trust", "graph", "delegation"],
+            "examples": [
+                "Endorse did:moltrust:abc123 for skill data-analysis",
+                "Issue a trust edge with confidence score 0.8"
+            ],
+            "inputModes": ["text", "data"],
+            "outputModes": ["data"]
+        },
+        {
+            "id": "moltguard-market-check",
+            "name": "Prediction Market Integrity Check",
+            "description": "Check Polymarket/Kalshi market for outcome anomalies, oracle manipulation patterns, and statistical irregularities. Paid via x402 ($0.05 USDC).",
+            "tags": ["moltguard", "prediction-market", "polymarket", "kalshi", "market-integrity"],
+            "examples": [
+                "Check market 0xabc... for anomaly indicators",
+                "Verify oracle integrity before placing trade"
+            ],
+            "inputModes": ["text"],
+            "outputModes": ["data"]
+        },
+        {
+            "id": "moltguard-events-feed",
+            "name": "Anomaly Event Feed",
+            "description": "Real-time stream of detected market integrity anomalies and behavioral red flags. Paid via x402 ($0.05 per poll).",
+            "tags": ["moltguard", "events", "anomaly", "feed", "monitoring"],
+            "examples": [
+                "Subscribe to anomaly events from MoltGuard surveillance",
+                "Poll for new market integrity flags"
+            ],
+            "inputModes": ["text"],
+            "outputModes": ["data"]
+        },
+        {
+            "id": "credential-issue",
+            "name": "Verifiable Credential Issuance",
+            "description": "Issue W3C Verifiable Credentials with AAE delegation envelopes. Premium endpoint requiring authentication.",
+            "tags": ["vc", "credential", "issuance", "aae", "premium"],
+            "examples": [
+                "Issue an AAE credential for agent did:moltrust:abc123 with skill scope",
+                "Generate signed delegation envelope for sub-agent"
+            ],
+            "inputModes": ["text", "data"],
+            "outputModes": ["data"]
+        }
+    ]
+
+    # New extensions
+    x402_pricing_ext = {
+        "uri": "https://moltrust.ch/extensions/x402-pricing/v1",
+        "description": "x402 micropayment pricing inventory for paid endpoints",
+        "required": False,
+        "params": {
+            "currency": "USDC",
+            "chain": "eip155:8453",
+            "endpoints": {
+                "sybil-scan": {"price": "0.10", "method": "GET", "path": "/guard/api/sybil/scan/{addr}"},
+                "agent-score": {"price": "0.05", "method": "GET", "path": "/guard/api/agent/score/{addr}"},
+                "market-check": {"price": "0.05", "method": "GET", "path": "/guard/api/market/check/{addr}"},
+                "events-feed": {"price": "0.05", "method": "GET", "path": "/guard/events/feed"}
+            }
+        }
+    }
+
+    moltguard_ext = {
+        "uri": "https://moltrust.ch/extensions/moltguard/v1",
+        "description": "MoltGuard surveillance and risk-scoring service capabilities",
+        "required": False,
+        "params": {
+            "service_url": "https://api.moltrust.ch/guard/",
+            "capabilities": ["sybil-detection", "market-surveillance", "wallet-risk-scoring", "anomaly-events"],
+            "data_sources": ["base-l2-onchain", "polymarket", "kalshi"],
+            "free_endpoints": ["/health", "/agent/sample", "/agent/score-free/{addr}"],
+            "rate_limits": {"free_tier": "1_per_10min", "paid_tier": "60_per_minute"}
+        }
+    }
+
+    # Build extended response (deep merge skills + extensions)
+    extended_card = {
+        **public_card,
+        "skills": public_card.get("skills", []) + extended_skills,
+        "capabilities": {
+            **public_card.get("capabilities", {}),
+            "extensions": public_card.get("capabilities", {}).get("extensions", []) + [x402_pricing_ext, moltguard_ext]
+        }
+    }
+
+    return extended_card
 
 
 @app.get("/a2a/agent-card/{did}")
