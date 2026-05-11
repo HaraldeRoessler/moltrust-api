@@ -480,40 +480,6 @@ def fetch_notifications(gh, since_iso):
 
 # ─── Agent health probes ──────────────────────────────────────────────────────
 
-def probe_vcone(gh, config, now):
-    """Returns dict with status info."""
-    out = {"name": "VCOne-AI", "flags": []}
-    account = config["agent_health"]["vcone_account"]
-    stale_h = config["agent_health"]["vcone_stale_hours"]
-    # public profile: 200 normal, 404 suspended
-    try:
-        r = requests.get(
-            f"https://api.github.com/users/{account}",
-            timeout=15,
-            headers={"User-Agent": "MolTrust-ThreadWatch/1.0"},
-        )
-        out["public_profile_status"] = r.status_code
-        if r.status_code == 404:
-            out["flags"].append("suspended (public 404)")
-    except Exception as e:
-        log.warning(f"vcone public probe: {e}")
-        out["public_profile_status"] = 0
-    # auth events (owner can read own history even if suspended)
-    try:
-        events, _ = gh.get(f"https://api.github.com/users/{account}/events?per_page=10")
-        if isinstance(events, list) and events:
-            last_ts = events[0].get("created_at")
-            out["last_event_ts"] = last_ts
-            t = parse_ts(last_ts)
-            if t:
-                age_h = (now - t).total_seconds() / 3600
-                out["last_event_age_h"] = age_h
-                if age_h > stale_h:
-                    out["flags"].append(f"no events in {int(age_h)}h (threshold {stale_h}h)")
-    except Exception as e:
-        log.warning(f"vcone events probe: {e}")
-    return out
-
 
 def probe_moltycel_queue(config):
     out = {"name": "MoltyCel queue", "flags": []}
@@ -779,10 +745,6 @@ def main():
 
     # 8. Agent health probes
     probes = []
-    try:
-        probes.append(probe_vcone(gh, config, now))
-    except Exception as e:
-        log.warning(f"vcone probe: {e}")
     try:
         probes.append(probe_moltycel_queue(config))
     except Exception as e:
