@@ -177,7 +177,7 @@ async def call_openai(client: httpx.AsyncClient, document: str, mode: str) -> di
 
 
 async def call_gemini(client: httpx.AsyncClient, document: str, mode: str) -> dict:
-    """Gemini 2.5 Flash Review Call — with retry on 503"""
+    """Gemini 2.5 Flash Review Call"""
     if not GEMINI_KEY:
         return {"model": "Gemini 2.5 Flash", "content": "ERROR: GEMINI_API_KEY nicht gesetzt", "error": True}
 
@@ -191,27 +191,15 @@ async def call_gemini(client: httpx.AsyncClient, document: str, mode: str) -> di
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
 
-    last_error = None
-    for attempt in range(3):
-        try:
-            resp = await client.post(url, json=payload, timeout=300)
-            if resp.status_code == 503 and attempt < 2:
-                wait = 10 * (attempt + 1)
-                print(f"   Gemini 503 — retry {attempt+1}/2 in {wait}s...")
-                await asyncio.sleep(wait)
-                continue
-            resp.raise_for_status()
-            data = resp.json()
-            content = data["candidates"][0]["content"]["parts"][0]["text"]
-            tokens = data.get("usageMetadata", {}).get("totalTokenCount", "?")
-            return {"model": "Gemini 2.5 Flash", "content": content, "tokens": tokens, "error": False}
-        except Exception as e:
-            last_error = e
-            if attempt < 2:
-                wait = 10 * (attempt + 1)
-                print(f"   Gemini error — retry {attempt+1}/2 in {wait}s...")
-                await asyncio.sleep(wait)
-    return {"model": "Gemini 2.5 Flash", "content": f"ERROR after 3 attempts: {last_error}", "error": True}
+    try:
+        resp = await client.post(url, json=payload, timeout=180)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data["candidates"][0]["content"]["parts"][0]["text"]
+        tokens = data.get("usageMetadata", {}).get("totalTokenCount", "?")
+        return {"model": "Gemini 2.5 Flash", "content": content, "tokens": tokens, "error": False}
+    except Exception as e:
+        return {"model": "Gemini 2.5 Flash", "content": f"ERROR: {e}", "error": True}
 
 
 async def call_perplexity(client: httpx.AsyncClient, document: str, mode: str) -> dict:

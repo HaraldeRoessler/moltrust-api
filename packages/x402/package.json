@@ -1,0 +1,12 @@
+{
+  "name": "@moltrust/x402",
+  "version": "1.0.0",
+  "description": "MolTrust trust score middleware for x402 endpoints",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "license": "MIT",
+  "keywords": ["x402", "moltrust", "trust", "agent", "middleware"],
+  "peerDependencies": {
+    "express": ">=4.0.0"
+  }
+}

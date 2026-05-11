@@ -1,0 +1,98 @@
+# ThreadWatch Config — Stop-Gap Inbound Monitor for MolTrust
+# Last edited: 2026-04-24
+
+# GitHub logins to recognize as "MolTrust-side" — comments from these
+# accounts count as "we responded". Mentions of @<identity> in others'
+# comments count as direct mentions.
+moltrust_identities:
+  - MoltyCel
+  - VCOne-AI
+  - vcone-ai
+  - moltrust-agent
+  - moltguard_v1
+
+# Substrings (case-insensitive) that indicate a thread mentions MolTrust
+# even without an @-mention. Used for relevance gating in active-crawl.
+mention_keywords:
+  - moltrust
+  - did:moltrust
+  - moltybridge
+  - moltrust.ch
+  - "@moltycel"
+  - "@vcone-ai"
+
+# Thread urgency thresholds.
+thresholds:
+  # urgent: external comment with direct @-mention, no MolTrust reply since,
+  #         within this many hours of the external comment
+  urgent_hours: 48
+  # active: external comment, we ever commented in thread, no reply since,
+  #         within this many days
+  active_days: 7
+  # stale: thread mentions MolTrust or we commented historically, no reply
+  #        since last external, within this many days
+  stale_days: 30
+  # max threads displayed per category in Telegram report
+  max_per_category: 10
+  # log file retention (days)
+  log_retention_days: 14
+  # skip the run entirely if GH rate-limit remaining is below this
+  min_rate_limit_remaining: 500
+
+# Repos to actively crawl for issues+comments updated in the last 7 days.
+# Initial bootstrap list — Lars edits here, no code change needed.
+watchlist:
+  # A2A protocol + ecosystem
+  - a2aproject/A2A
+  - microsoft/autogen
+
+  # aeoess constellation
+  - aeoess/autogen-governance-adapter
+  - aeoess/agent-governance-vocabulary
+  - aeoess/agent-passport-system
+  - aeoess/agent-ecosystem-map
+
+  # Test-vector + interop repos
+  - ScopeBlind/agent-governance-testvectors
+
+  # MolTrust-owned (catch issues opened against our repos)
+  - MoltyCel/moltrust-api
+  - MoltyCel/moltrust-sdk
+  - MoltyCel/moltrust-protocol
+  - MoltyCel/openclaw-skills
+  - MoltyCel/moltrust-mcp-server
+  - MoltyCel/status.moltrust.ch
+  - MoltyCel/moltrust-openclaw
+
+  # Partner integration repos
+  - corpollc/qntm
+  - haroldmalikfrimpong-ops/agentid-aps-interop
+  - haroldmalikfrimpong-ops/AgentID
+  - kevinkaylie/AgentNexus
+  - alxvasilevvv/MEEET
+
+  # Standards / spec repos
+  - provai-dev/aip-spec
+  - coinbase/x402
+  - modelcontextprotocol/servers
+  - modelcontextprotocol/specification
+  - w3c/did-extensions
+  - w3c-cg/did-resolution
+  - decentralized-identity/universal-resolver
+
+# Local agent health probes — paths read for liveness signals
+agent_health:
+  # MoltyCel pending drafts queue
+  moltycel_pending_dir: /home/moltstack/moltycelbot/drafts/pending
+  # Moltbook agent log files (last successful POST checked)
+  moltbook_logs:
+    ambassador: /home/moltstack/moltstack/logs/ambassador.log
+    moltbook_poster: /home/moltstack/moltstack/logs/moltbook.log
+    heartbeat: /home/moltstack/moltstack/logs/moltbook-heartbeat.log
+  # Endpoint probe state
+  endpoint_probe_state: /home/moltstack/moltstack/state/endpoint_probe.json
+  # Stale thresholds (hours)
+  agent_stale_hours: 24
+  # VCOne suspension check (account public 404 + no events for N hours)
+  vcone_account: VCOne-AI
+  vcone_stale_hours: 48

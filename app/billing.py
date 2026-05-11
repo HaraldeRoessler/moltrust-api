@@ -1,0 +1,415 @@
+"""
+MolTrust Billing Integration — Stripe
+billing.py — FastAPI Router
+
+Produkte (Sandbox + Live gleiche IDs nach Migration):
+  - MolTrust Developer  CHF 29/Monat
+  - MolTrust Startup    CHF 149/Monat
+  - MolTrust Business   CHF 499/Monat
+
+Env vars required (aus ~/.moltrust_secrets):
+  STRIPE_SECRET_KEY      sk_test_... (→ sk_live_... im Live-Betrieb)
+  STRIPE_WEBHOOK_SECRET  whsec_...   (nach Webhook-Registrierung)
+"""
+
+import os
+import logging
+import re
+from datetime import datetime, timezone
+
+import stripe
+from fastapi import APIRouter, HTTPException, Request, Header
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional
+
+REF_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+# ── Stripe init ─────────────────────────────────────────────────────────────
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+
+logger = logging.getLogger("billing")
+router = APIRouter(prefix="/billing", tags=["billing"])
+admin_router = APIRouter(prefix="/admin/billing", tags=["billing-admin"])
+
+# ── Tier definitions ─────────────────────────────────────────────────────────
+TIERS = {
+    "developer": {
+        "name": "MolTrust Developer",
+        "price_chf": 29,
+        "did_limit": 25,
+        "api_calls_month": 25_000,
+        "sla": "99%",
+    },
+    "startup": {
+        "name": "MolTrust Startup",
+        "price_chf": 149,
+        "did_limit": 100,
+        "api_calls_month": 100_000,
+        "sla": "99.5%",
+    },
+    "business": {
+        "name": "MolTrust Business",
+        "price_chf": 499,
+        "did_limit": -1,
+        "api_calls_month": 500_000,
+        "sla": "99.9%",
+    },
+}
+# ── DB table setup ───────────────────────────────────────────────────────────
+async def ensure_billing_tables(conn):
+    """Create billing tables if they don't exist."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS billing_subscriptions (
+            stripe_subscription_id TEXT PRIMARY KEY,
+            stripe_customer_id     TEXT NOT NULL,
+            tier                   TEXT NOT NULL,
+            agent_did              TEXT,
+            active                 BOOLEAN NOT NULL DEFAULT true,
+            current_period_end     TIMESTAMPTZ,
+            cancel_at_period_end   BOOLEAN NOT NULL DEFAULT false,
+            created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """)
+    await conn.execute("""
+        ALTER TABLE billing_subscriptions
+        ADD COLUMN IF NOT EXISTS referral_source TEXT
+    """)
+    await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_billing_sub_referral
+        ON billing_subscriptions(referral_source)
+        WHERE referral_source IS NOT NULL
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS billing_payments (
+            stripe_invoice_id      TEXT PRIMARY KEY,
+            stripe_customer_id     TEXT NOT NULL,
+            amount_chf             NUMERIC(10,2) NOT NULL DEFAULT 0,
+            success                BOOLEAN NOT NULL,
+            created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """)
+    await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_billing_sub_customer
+        ON billing_subscriptions(stripe_customer_id)
+    """)
+    await conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_billing_pay_customer
+        ON billing_payments(stripe_customer_id)
+    """)
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODELS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class CheckoutRequest(BaseModel):
+    tier: str
+    email: Optional[EmailStr] = None
+    agent_did: Optional[str] = None
+    ref: Optional[str] = Field(
+        default=None,
+        description="Optional referral source tag (e.g. 'dsncon'). Stored on the subscription for attribution.",
+    )
+    success_url: str = "https://moltrust.ch/billing/success"
+    cancel_url: str = "https://moltrust.ch/billing/cancel"
+class PortalRequest(BaseModel):
+    customer_id: str
+    return_url: str = "https://moltrust.ch/dashboard"
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/plans")
+async def list_plans():
+    """Public: return all available plans."""
+    return {"plans": TIERS}
+@router.post("/checkout")
+async def create_checkout(req: CheckoutRequest):
+    """
+    Create a Stripe Checkout Session.
+    Returns {checkout_url} — redirect customer there.
+    """
+    if req.tier not in TIERS:
+        raise HTTPException(400, f"Unknown tier: {req.tier}. Use: {list(TIERS)}")
+
+    tier_info = TIERS[req.tier]
+
+    prices = stripe.Price.list(
+        currency="chf",
+        active=True,
+        expand=["data.product"],
+    )
+
+    price_id = None
+    for p in prices.data:
+        product = p.product
+        if isinstance(product, dict):
+            product_name = product.get("name", "")
+        else:
+            product_name = getattr(product, "name", "")
+        if product_name == tier_info["name"]:
+            price_id = p.id
+            break
+
+    if not price_id:
+        raise HTTPException(
+            500,
+            f"Stripe Price not found for tier '{req.tier}'. "
+            "Erstelle Produkte im Stripe Dashboard: "
+            "MolTrust Developer (CHF 29), Startup (CHF 149), Business (CHF 499)."
+        )
+
+    # Normalize referral tag: lowercase, restricted charset, truncate
+    ref = (req.ref or "").strip().lower()
+    if ref and not REF_RE.match(ref):
+        raise HTTPException(400, "Invalid ref: use 1–64 chars of [a-z0-9_-]")
+
+    # Customer: lookup by email or let Stripe collect it
+    customer_kwargs = {}
+    if req.email:
+        customers = stripe.Customer.list(email=req.email, limit=1)
+        if customers.data:
+            customer_kwargs["customer"] = customers.data[0].id
+            # Stamp referral on existing Customer only if not already set (first-touch)
+            if ref:
+                existing = customers.data[0]
+                if not (existing.metadata or {}).get("referral_source"):
+                    stripe.Customer.modify(
+                        existing.id,
+                        metadata={**(existing.metadata or {}), "referral_source": ref},
+                    )
+        else:
+            cust_metadata = {"agent_did": req.agent_did or ""}
+            if ref:
+                cust_metadata["referral_source"] = ref
+            cust = stripe.Customer.create(
+                email=req.email,
+                metadata=cust_metadata,
+            )
+            customer_kwargs["customer"] = cust.id
+
+    session_metadata = {
+        "tier": req.tier,
+        "agent_did": req.agent_did or "",
+    }
+    sub_metadata = {
+        "tier": req.tier,
+        "agent_did": req.agent_did or "",
+    }
+    if ref:
+        session_metadata["referral_source"] = ref
+        sub_metadata["referral_source"] = ref
+
+    session = stripe.checkout.Session.create(
+        **customer_kwargs,
+        mode="subscription",
+        line_items=[{"price": price_id, "quantity": 1}],
+        success_url=req.success_url + "?session_id={CHECKOUT_SESSION_ID}",
+        cancel_url=req.cancel_url,
+        metadata=session_metadata,
+        subscription_data={"metadata": sub_metadata},
+    )
+
+    logger.info(
+        "Checkout created: %s tier=%s email=%s ref=%s",
+        session.id, req.tier, req.email, ref or "-",
+    )
+    return {"checkout_url": session.url, "session_id": session.id}
+@router.post("/portal")
+async def customer_portal(req: PortalRequest):
+    """Create a Stripe Customer Portal session for self-service management."""
+    portal = stripe.billing_portal.Session.create(
+        customer=req.customer_id,
+        return_url=req.return_url,
+    )
+    return {"portal_url": portal.url}
+@router.get("/subscription/{customer_id}")
+async def get_subscription(customer_id: str):
+    """Get current subscription status for a customer."""
+    subs = stripe.Subscription.list(customer=customer_id, status="active", limit=1)
+    if not subs.data:
+        return {"active": False, "tier": None}
+
+    sub = subs.data[0]
+    tier = sub.metadata.get("tier", "unknown")
+    return {
+        "active": True,
+        "tier": tier,
+        "tier_info": TIERS.get(tier),
+        "current_period_end": datetime.fromtimestamp(
+            sub.current_period_end, tz=timezone.utc
+        ).isoformat(),
+        "cancel_at_period_end": sub.cancel_at_period_end,
+        "stripe_subscription_id": sub.id,
+        "stripe_customer_id": customer_id,
+    }
+# ═══════════════════════════════════════════════════════════════════════════════
+# WEBHOOK  —  https://api.moltrust.ch/billing/webhook
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/webhook")
+async def stripe_webhook(request: Request, stripe_signature: str = Header(None)):
+    """
+    Stripe sends signed events here.
+    Verifies signature → updates billing tables via asyncpg pool.
+    """
+    from app.main import db_pool
+
+    if not db_pool:
+        raise HTTPException(503, "Database unavailable")
+
+    payload = await request.body()
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, stripe_signature, WEBHOOK_SECRET
+        )
+    except stripe.SignatureVerificationError:
+        logger.warning("Webhook signature verification failed")
+        raise HTTPException(400, "Invalid signature")
+    except Exception as e:
+        logger.error("Webhook error: %s", e)
+        raise HTTPException(400, str(e))
+
+    event_type = event["type"]
+    data = event["data"]["object"]
+
+    logger.info("Stripe webhook: %s id=%s", event_type, event["id"])
+
+    async with db_pool.acquire() as conn:
+        if event_type in (
+            "customer.subscription.created",
+            "customer.subscription.updated",
+        ):
+            await _upsert_subscription(conn, data, active=True)
+
+        elif event_type == "customer.subscription.deleted":
+            await _upsert_subscription(conn, data, active=False)
+
+        elif event_type == "invoice.payment_succeeded":
+            logger.info(
+                "Payment OK: customer=%s amount=%.2f %s",
+                data.get("customer"),
+                data.get("amount_paid", 0) / 100,
+                data.get("currency", "chf").upper(),
+            )
+            await _log_payment(conn, data, success=True)
+
+        elif event_type == "invoice.payment_failed":
+            logger.warning("Payment FAILED: customer=%s", data.get("customer"))
+            await _log_payment(conn, data, success=False)
+
+    return JSONResponse({"received": True})
+# ═══════════════════════════════════════════════════════════════════════════════
+# DB HELPERS (asyncpg)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _upsert_subscription(conn, sub: dict, active: bool):
+    """Insert or update billing_subscriptions table."""
+    meta = sub.get("metadata") or {}
+    tier = meta.get("tier", "unknown")
+    agent_did = meta.get("agent_did") or None
+    referral_source = meta.get("referral_source") or None
+
+    # Fallback: if subscription metadata is missing referral_source, look it up on the Customer
+    if not referral_source and sub.get("customer"):
+        try:
+            customer = stripe.Customer.retrieve(sub["customer"])
+            referral_source = (customer.metadata or {}).get("referral_source") or None
+        except Exception as e:
+            logger.warning("Could not fetch customer %s for referral lookup: %s", sub.get("customer"), e)
+
+    await conn.execute("""
+        INSERT INTO billing_subscriptions
+            (stripe_subscription_id, stripe_customer_id, tier, agent_did,
+             active, current_period_end, cancel_at_period_end,
+             referral_source, updated_at)
+        VALUES ($1, $2, $3, $4, $5, to_timestamp($6), $7, $8, NOW())
+        ON CONFLICT (stripe_subscription_id) DO UPDATE SET
+            tier                 = EXCLUDED.tier,
+            active               = EXCLUDED.active,
+            current_period_end   = EXCLUDED.current_period_end,
+            cancel_at_period_end = EXCLUDED.cancel_at_period_end,
+            referral_source      = COALESCE(billing_subscriptions.referral_source, EXCLUDED.referral_source),
+            updated_at           = NOW()
+    """,
+        sub["id"],
+        sub["customer"],
+        tier,
+        agent_did,
+        active,
+        sub.get("current_period_end"),
+        sub.get("cancel_at_period_end", False),
+        referral_source,
+    )
+    logger.info(
+        "Subscription upserted: %s tier=%s active=%s ref=%s",
+        sub["id"], tier, active, referral_source or "-",
+    )
+async def _log_payment(conn, invoice: dict, success: bool):
+    """Log payment event to billing_payments table."""
+    await conn.execute("""
+        INSERT INTO billing_payments
+            (stripe_invoice_id, stripe_customer_id, amount_chf, success, created_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT (stripe_invoice_id) DO NOTHING
+    """,
+        invoice["id"],
+        invoice["customer"],
+        invoice.get("amount_paid", 0) / 100,
+        success,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ADMIN  —  referral attribution (no commission calculation, just tracking)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@admin_router.get("/referrals")
+async def list_referrals(request: Request):
+    """
+    Return subscription counts and MRR (CHF) grouped by referral_source.
+    Requires x-admin-key header matching ADMIN_KEY env var.
+    """
+    admin_key = request.headers.get("x-admin-key", "")
+    expected = os.environ.get("ADMIN_KEY", "")
+    if not expected or admin_key != expected:
+        raise HTTPException(401, "Admin key required")
+
+    from app.main import db_pool
+    if not db_pool:
+        raise HTTPException(503, "Database unavailable")
+
+    # Build tier→price lookup as VALUES rows so MRR is summed in SQL
+    tier_values = ",".join(
+        f"('{t}', {info['price_chf']})" for t, info in TIERS.items()
+    )
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(f"""
+            SELECT
+                bs.referral_source,
+                COUNT(*)::int                                AS subscriptions,
+                COALESCE(SUM(tp.price_chf), 0)::numeric(12,2) AS mrr_chf
+            FROM billing_subscriptions bs
+            LEFT JOIN (VALUES {tier_values}) AS tp(tier, price_chf)
+              ON tp.tier = bs.tier
+            WHERE bs.active = true
+              AND bs.referral_source IS NOT NULL
+            GROUP BY bs.referral_source
+            ORDER BY mrr_chf DESC, bs.referral_source
+        """)
+
+    return {
+        "referrals": [
+            {
+                "referral_source": r["referral_source"],
+                "subscriptions": r["subscriptions"],
+                "mrr_chf": float(r["mrr_chf"]),
+            }
+            for r in rows
+        ],
+        "total_sources": len(rows),
+        "total_mrr_chf": float(sum(r["mrr_chf"] for r in rows)),
+    }
