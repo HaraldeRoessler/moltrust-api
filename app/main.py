@@ -944,44 +944,6 @@ async def verify_agent(request: Request, did: str = Path(max_length=40)):
 _BADGE_TIER_BY_GRADE = {"A": "gold", "B": "silver", "C": "bronze"}
 
 
-@app.get("/identity/badge/{did}.svg")
-@limiter.limit("60/minute")
-async def get_identity_badge_svg(request: Request, did: str = Path(max_length=80)):
-    """SVG badge for embedding/inlining on the moltrust.ch /verify/{did}
-    page. The frontend fetches this in parallel with /identity/badge/{did}
-    and inlines the result via r.text().
-
-    Mirrors the rendering logic of /badge/{did:path} (which predates the
-    /identity/* convention) so both URLs stay in lockstep. 1h cache.
-    Returns 200 with a placeholder SVG even for unknown/unscored DIDs —
-    matches the /badge/{did:path} behaviour (renders 'N/A' rather than
-    surfacing a 404 inline image).
-    """
-    from app.swarm.trust_score import compute_phase2_score, score_to_grade
-    score = None
-    grade = None
-    try:
-        if db_pool:
-            async with db_pool.acquire() as conn:
-                result = await compute_phase2_score(did, conn)
-                score = result.get("score")
-                grade = score_to_grade(score)
-    except Exception:
-        pass
-
-    did_short = did[-8:] if len(did) > 8 else did
-    svg = _build_badge_svg(score, grade, did_short)
-
-    from starlette.responses import Response as _Resp
-    return _Resp(
-        content=svg,
-        media_type="image/svg+xml",
-        headers={
-            "Cache-Control": "max-age=3600, s-maxage=3600",
-            "Access-Control-Allow-Origin": "*",
-        },
-    )
-
 @app.get("/identity/badge/{did}")
 @limiter.limit("60/minute")
 async def get_identity_badge(request: Request, did: str = Path(max_length=80)):
@@ -1050,6 +1012,45 @@ async def get_identity_badge(request: Request, did: str = Path(max_length=80)):
         "verify_url": f"https://moltrust.ch/verify/{did}",
         "badge_url": f"https://api.moltrust.ch/identity/badge/{did}.svg",
     }
+
+
+@app.get("/identity/badge/{did}.svg")
+@limiter.limit("60/minute")
+async def get_identity_badge_svg(request: Request, did: str = Path(max_length=80)):
+    """SVG badge for embedding/inlining on the moltrust.ch /verify/{did}
+    page. The frontend fetches this in parallel with /identity/badge/{did}
+    and inlines the result via r.text().
+
+    Mirrors the rendering logic of /badge/{did:path} (which predates the
+    /identity/* convention) so both URLs stay in lockstep. 1h cache.
+    Returns 200 with a placeholder SVG even for unknown/unscored DIDs —
+    matches the /badge/{did:path} behaviour (renders 'N/A' rather than
+    surfacing a 404 inline image).
+    """
+    from app.swarm.trust_score import compute_phase2_score, score_to_grade
+    score = None
+    grade = None
+    try:
+        if db_pool:
+            async with db_pool.acquire() as conn:
+                result = await compute_phase2_score(did, conn)
+                score = result.get("score")
+                grade = score_to_grade(score)
+    except Exception:
+        pass
+
+    did_short = did[-8:] if len(did) > 8 else did
+    svg = _build_badge_svg(score, grade, did_short)
+
+    from starlette.responses import Response as _Resp
+    return _Resp(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={
+            "Cache-Control": "max-age=3600, s-maxage=3600",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
 
 
 @app.get("/reputation/query/{did}")
