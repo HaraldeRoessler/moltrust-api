@@ -68,13 +68,28 @@ from fastapi.responses import HTMLResponse as _HTMLResp
 
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui():
+    # CSP limits the blast radius of any future injection into this HTML.
+    # Allowlist mirrors what the page actually loads (Swagger UI CDN
+    # + favicon host). 'unsafe-inline' is required by the existing
+    # theme-toggle script and inline styles; tightening further would
+    # need extracting those into a hashed external file.
+    _csp = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "img-src 'self' data: https://moltrust.ch; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'"
+    )
     return _HTMLResp("""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <title>MolTrust API</title>
 <link rel="icon" href="https://moltrust.ch/img/favicon.png" type="image/png">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui.css" integrity="sha384-wxLW6kwyHktdDGr6Pv1zgm/VGJh99lfUbzSn6HNHBENZlCN7W602k9VkGdxuFvPn" crossorigin="anonymous">
 <style>
   :root { --bg: #fff; --topbar-bg: #0F172A; --text: #1E293B; --border: #E2E8F0; }
   [data-theme="dark"] { --bg: #0F172A; --topbar-bg: #0F172A; --text: #E2E8F0; --border: #334155; }
@@ -150,15 +165,20 @@ function toggleTheme(){var c=document.documentElement.getAttribute('data-theme')
 SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui',presets:[SwaggerUIBundle.presets.apis,SwaggerUIBundle.SwaggerUIStandalonePreset],layout:'BaseLayout',deepLinking:true});
 </script>
 </body>
-</html>""")
+</html>""", headers={"Content-Security-Policy": _csp})
 
 
 # --- Config ---
-MOLTBOOK_APP_KEY = os.getenv("MOLTBOOK_APP_KEY", "moltdev_PENDING")
+# Fail-fast on required secrets / credentials. No "PENDING" defaults that
+# could silently bleed into production traffic.
+MOLTBOOK_APP_KEY = os.getenv("MOLTBOOK_APP_KEY", "")
 if not os.getenv("MOLTRUST_API_KEYS"):
     raise RuntimeError("MOLTRUST_API_KEYS environment variable is required — no default key allowed")
 API_KEYS = set(os.getenv("MOLTRUST_API_KEYS").split(","))
-DB_URL = os.getenv("DATABASE_URL", "postgresql://moltstack:$(cat /dev/null)@localhost/moltstack")
+# Use a benign default for DATABASE_URL — the previous default contained a
+# `$(...)` shell-injection antipattern that did nothing because the value
+# was never shelled out, but was confusing on review.
+DB_URL = os.getenv("DATABASE_URL", "postgresql://moltstack@localhost/moltstack")
 
 # --- Credits Config ---
 CREDITS_ENABLED = os.getenv("CREDITS_ENABLED", "false").lower() == "true"
@@ -175,10 +195,16 @@ db_pool = None
 @app.on_event("startup")
 async def startup():
     global db_pool
+    # MOLTSTACK_DB_PW is required at startup. Empty password against a
+    # misconfigured Postgres could silently succeed in development and
+    # mask credential-rotation incidents in production.
+    _db_pw = os.getenv("MOLTSTACK_DB_PW")
+    if not _db_pw:
+        raise RuntimeError("MOLTSTACK_DB_PW environment variable is required")
     try:
         db_pool = await asyncpg.create_pool(
             host=os.getenv("DB_HOST", "localhost"), database=os.getenv("DB_NAME", "moltstack"),
-            user="moltstack", password=os.getenv("MOLTSTACK_DB_PW", ""),
+            user="moltstack", password=_db_pw,
             min_size=2, max_size=10
         )
     except Exception as e:
@@ -265,13 +291,33 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 # --- Outbound Content Filter ---
+# scrub_secrets is a belt-and-suspenders defence layered on top of
+# code-level care. The patterns target high-shape secret formats —
+# adding new patterns is cheap; missing one is the only failure mode.
 SENSITIVE_PATTERNS = [
     re.compile(r"sk-ant-api[a-zA-Z0-9\-_]{20,}"),
     re.compile(r"sk-[a-zA-Z0-9]{20,}"),
     re.compile(r"xprv[a-zA-Z0-9]{50,}"),
     re.compile(r"password\s*[:=]\s*\S+", re.IGNORECASE),
-    re.compile(r"BEGIN (RSA |EC )?PRIVATE KEY"),
+    re.compile(r"BEGIN (RSA |EC |OPENSSH |DSA |ENCRYPTED |PRIVATE )?PRIVATE KEY"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
+    # AWS-flavoured secret access keys (40-char base64).
+    re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9])"),
+    # GitHub fine-grained / classic / app tokens.
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"),
+    # Stripe live + restricted tokens.
+    re.compile(r"(sk|rk)_live_[A-Za-z0-9]{20,}"),
+    re.compile(r"whsec_[A-Za-z0-9]{20,}"),
+    # OpenAI / Anthropic short-form bearer tokens.
+    re.compile(r"sk-proj-[A-Za-z0-9\-_]{20,}"),
+    # JWT structure (three b64url-encoded sections).
+    re.compile(r"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"),
+    # Note: a generic `[0-9a-fA-F]{64,}` rule was intentionally NOT added.
+    # 64-hex blobs include legitimate response payloads — Ethereum tx
+    # hashes, anchor / IPR commitment hashes, content hashes — and
+    # scrubbing them would break the API surface. Likewise base58 would
+    # eat wallet addresses. Add new patterns only when both
+    # high-precision (low false-positive rate) and high-impact.
 ]
 
 def scrub_secrets(obj):
@@ -293,8 +339,10 @@ async def update_last_active(did: str):
                 await conn.execute(
                     "UPDATE agents SET last_seen = now(), last_active_at = now() WHERE did = $1", did
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            # Fire-and-forget by design (don't block the request), but log
+            # so a schema drift / DB hiccup doesn't disappear silently.
+            logger.warning("update_last_active(%s) failed: %s", did, e)
 
 
 # --- IP Enrichment ---
@@ -330,13 +378,72 @@ async def _enrich_ip(ip: str) -> dict:
 
 
 def _get_client_ip(request) -> str:
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip.strip()[:50]
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[-1].strip()[:50]
-    return (request.client.host if request.client else "unknown")[:50]
+    """
+    Resolve the client IP from the request.
+
+    Honours `X-Real-IP` / `X-Forwarded-For` ONLY when the immediate
+    upstream (`request.client.host`) falls inside one of the CIDRs
+    declared in `MOLTRUST_TRUSTED_PROXIES` (comma-separated). When the
+    env var is unset, defaults to RFC1918 + loopback, which covers the
+    common case of api.moltrust.ch sitting behind a private-IP load
+    balancer. Set `MOLTRUST_TRUSTED_PROXIES="0.0.0.0/0,::/0"` to fall
+    back to the previous "trust everyone" behaviour during migration.
+
+    Without this gating, any external client could spoof X-Forwarded-For
+    to bypass rate limits or pollute the request log.
+    """
+    direct = request.client.host if request.client else None
+    if direct and _is_trusted_proxy(direct):
+        real_ip = request.headers.get("X-Real-IP")
+        if real_ip:
+            return real_ip.strip()[:50]
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[-1].strip()[:50]
+    return (direct or "unknown")[:50]
+
+
+def _is_trusted_proxy(client_host: str) -> bool:
+    try:
+        import ipaddress
+        ip_obj = ipaddress.ip_address(client_host)
+    except (ValueError, ImportError):
+        return False
+    for net in _trusted_proxy_networks():
+        try:
+            if ip_obj in net:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+_TRUSTED_PROXY_CACHE: list = []
+_TRUSTED_PROXY_CACHED_FOR: str | None = None
+
+
+def _trusted_proxy_networks() -> list:
+    """Parse MOLTRUST_TRUSTED_PROXIES once, then memoise."""
+    global _TRUSTED_PROXY_CACHE, _TRUSTED_PROXY_CACHED_FOR
+    raw = os.environ.get(
+        "MOLTRUST_TRUSTED_PROXIES",
+        "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7",
+    )
+    if raw == _TRUSTED_PROXY_CACHED_FOR:
+        return _TRUSTED_PROXY_CACHE
+    import ipaddress
+    nets = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            continue
+    _TRUSTED_PROXY_CACHE = nets
+    _TRUSTED_PROXY_CACHED_FOR = raw
+    return nets
 
 
 def _anonymize_ip(ip: str) -> str:
@@ -360,8 +467,10 @@ async def update_last_seen(did: str):
         try:
             async with db_pool.acquire() as conn:
                 await conn.execute("UPDATE agents SET last_seen = now() WHERE did = $1", did)
-        except:
-            pass
+        except Exception as e:
+            # Fire-and-forget by design, but log so a schema drift / DB
+            # hiccup doesn't disappear silently. (Was a bare `except: pass`.)
+            logger.warning("update_last_seen(%s) failed: %s", did, e)
 
 @app.middleware("http")
 async def content_filter_middleware(request: Request, call_next):
@@ -536,7 +645,13 @@ def verify_api_key_or_did(
 
 
 # --- DID-Wallet Binding: Nonce helpers ---
-NONCE_SECRET = os.getenv("NONCE_SECRET", "")
+# Fail-fast: an empty NONCE_SECRET would make HMAC nonces trivially
+# forgeable. The runtime checks at the issuance + verify call sites
+# would catch this, but better to refuse to start than allow an
+# accidentally-misconfigured deploy to serve traffic.
+NONCE_SECRET = os.getenv("NONCE_SECRET")
+if not NONCE_SECRET:
+    raise RuntimeError("NONCE_SECRET environment variable is required — no default allowed")
 
 def _generate_nonce(did: str) -> str:
     import time as _t, hashlib as _hl
@@ -585,7 +700,11 @@ _reg_tracker: dict[str, list[float]] = {}
 
 def check_registration_rate(api_key: str, max_per_hour: int = 5):
     now = time.time()
-    key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+    # Full SHA-256 digest. The previous 16-char (64-bit) truncation was
+    # within brute-force range for an attacker generating many API keys
+    # to find collisions and bypass per-key rate limits. The dict key is
+    # an in-memory lookup; the full 64-char hex string is fine.
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()
     if key_hash not in _reg_tracker:
         _reg_tracker[key_hash] = []
     _reg_tracker[key_hash] = [t for t in _reg_tracker[key_hash] if now - t < 3600]
@@ -935,6 +1054,8 @@ async def register_agent(request: Request, body: RegisterRequest, api_key: str =
 @app.post("/auth/moltbook")
 @limiter.limit("20/minute")
 async def auth_with_moltbook(request: Request, body: MoltbookAuthRequest):
+    if not MOLTBOOK_APP_KEY:
+        raise HTTPException(503, "Moltbook integration not configured (MOLTBOOK_APP_KEY env var unset)")
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.post(
@@ -2760,15 +2881,19 @@ async def verify_vc(request: Request, body: VerifyVCRequest):
     return result
 # --- Multi-Platform OAuth ---
 
-GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "PENDING")
-GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "PENDING")
+# GitHub OAuth is optional — endpoints below return 503 when unset. The
+# previous "PENDING" sentinel was a foot-gun: a leak into production
+# would have produced a half-broken OAuth handshake. Empty string + a
+# truthy check at the call sites is cleaner.
+GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
 _oauth_states: dict[str, float] = {}  # state -> timestamp
 
 @app.get("/auth/github")
 @limiter.limit("10/minute")
 async def github_auth_start(request: Request):
     """Redirect to GitHub OAuth"""
-    if GITHUB_CLIENT_ID == "PENDING":
+    if not GITHUB_CLIENT_ID:
         raise HTTPException(503, "GitHub OAuth not yet configured")
     # MEDIUM-1: CSRF protection via state parameter
     import time as _time
@@ -2784,7 +2909,7 @@ async def github_auth_start(request: Request):
 @limiter.limit("10/minute")
 async def github_auth_callback(request: Request, code: str = Query(max_length=128),
                                state: str = Query(default="", max_length=64)):
-    if GITHUB_CLIENT_ID == "PENDING":
+    if not GITHUB_CLIENT_ID:
         raise HTTPException(503, "GitHub OAuth not yet configured")
     # MEDIUM-1: Validate CSRF state parameter
     import time as _time
@@ -6616,6 +6741,15 @@ async def caller_detail(ip: str, request: Request):
     _get_admin_session(request)
     if not db_pool:
         raise HTTPException(503, "Database unavailable")
+
+    # Validate IP shape before using as a LIKE-prefix in SQL. The query
+    # is parameterised, but an unvalidated string (e.g. "% OR 1=1 --")
+    # would still produce confusing matches and pollute audit views.
+    import ipaddress as _ip_mod
+    try:
+        _ip_mod.ip_address(ip)
+    except ValueError:
+        raise HTTPException(400, "invalid IP address")
 
     import subprocess as _sp
 
