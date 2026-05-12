@@ -342,7 +342,9 @@ async def update_last_active(did: str):
         except Exception as e:
             # Fire-and-forget by design (don't block the request), but log
             # so a schema drift / DB hiccup doesn't disappear silently.
-            logger.warning("update_last_active(%s) failed: %s", did, e)
+            # Log only `type(e).__name__` — `e` can serialise asyncpg's
+            # connection string (with password) into the message.
+            logger.warning("update_last_active(%s) failed: %s", did, type(e).__name__)
 
 
 # --- IP Enrichment ---
@@ -470,7 +472,9 @@ async def update_last_seen(did: str):
         except Exception as e:
             # Fire-and-forget by design, but log so a schema drift / DB
             # hiccup doesn't disappear silently. (Was a bare `except: pass`.)
-            logger.warning("update_last_seen(%s) failed: %s", did, e)
+            # Log only `type(e).__name__` — `e` can serialise asyncpg's
+            # connection string (with password) into the message.
+            logger.warning("update_last_seen(%s) failed: %s", did, type(e).__name__)
 
 @app.middleware("http")
 async def content_filter_middleware(request: Request, call_next):
