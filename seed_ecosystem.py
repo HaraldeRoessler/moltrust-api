@@ -35,7 +35,7 @@ RATINGS = [
 ]
 
 def register_agent(name):
-    r = requests.post(f"{API}/identity/register", headers=HEADERS, json={"name": name})
+    r = requests.post(f"{API}/identity/register", headers=HEADERS, json={"name": name}, timeout=15)
     data = r.json()
     print(f"  Registered: {name} -> {data.get('did', 'ERROR')}")
     return data.get("did")
@@ -43,17 +43,17 @@ def register_agent(name):
 def rate_agent(from_did, to_did, score):
     r = requests.post(f"{API}/reputation/rate", headers=HEADERS, json={
         "from_did": from_did, "to_did": to_did, "score": score
-    })
+    }, timeout=15)
     return r.json()
 
 def issue_credential(subject_did):
     r = requests.post(f"{API}/credentials/issue", headers=HEADERS, json={
         "subject_did": subject_did
-    })
+    }, timeout=15)
     return r.json()
 
 def get_reputation(did):
-    r = requests.get(f"{API}/reputation/query/{did}", headers=HEADERS)
+    r = requests.get(f"{API}/reputation/query/{did}", headers=HEADERS, timeout=15)
     return r.json()
 
 def main():

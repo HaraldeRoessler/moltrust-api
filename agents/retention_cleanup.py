@@ -16,9 +16,11 @@ def send_telegram(msg):
         return
     try:
         data = json.dumps({"chat_id": TG_CHAT, "text": msg}).encode()
-        req = Request(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
-                      data=data, headers={"Content-Type": "application/json"})
-        urlopen(req, timeout=10)
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+        if not url.startswith(("http://", "https://")):
+            return
+        req = Request(url, data=data, headers={"Content-Type": "application/json"})
+        urlopen(req, timeout=10)  # noqa: S310 — scheme validated above
     except Exception:
         pass
 

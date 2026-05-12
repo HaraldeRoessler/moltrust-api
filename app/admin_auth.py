@@ -1,22 +1,37 @@
 """MolTrust Admin Dashboard — Auth Module"""
+import os
 import secrets
 from datetime import datetime, timezone, timedelta
 import bcrypt
 
-ADMIN_USERS = {
-    "lars": {
-        "hash": "$2b$12$rxHaimEF4Ok1bXO4jybvQOx8cSmwhM/JRGWfTtlZ0OvvoFftTg6NC",
-        "role": "superadmin",
-    },
-    "harald": {
-        "hash": "$2b$12$c5GzSAMWozukKvNWmIiZ8OnP7I9i/7Ho0kKx5hVNGGUbJzWKXvZgC",
-        "role": "admin",
-    },
-    "bernd": {
-        "hash": "$2b$12$l3IuGfAveTEmC06YS7CNb.C3yGU5rkRvRJYnfpD6C4OtyBcqlMQBK",
-        "role": "admin",
-    },
-}
+
+def _load_admin_users() -> dict:
+    """
+    Load admin users from env vars rather than baking bcrypt hashes into
+    source. The expected format is a comma-separated triplet list:
+
+        MOLTRUST_ADMIN_USERS="lars:superadmin:$2b$12$...,harald:admin:$2b$12$...,bernd:admin:$2b$12$..."
+
+    Empty / missing env var → no admins registered (login will refuse
+    every request, fail-closed). Hashes that don't parse as bcrypt are
+    skipped with a startup warning.
+    """
+    raw = os.environ.get("MOLTRUST_ADMIN_USERS", "").strip()
+    if not raw:
+        return {}
+    users: dict[str, dict] = {}
+    for entry in raw.split(","):
+        parts = entry.strip().split(":", 2)
+        if len(parts) != 3:
+            continue
+        username, role, hashval = parts[0].strip(), parts[1].strip(), parts[2].strip()
+        if not username or not role or not hashval.startswith("$2"):
+            continue
+        users[username] = {"hash": hashval, "role": role}
+    return users
+
+
+ADMIN_USERS: dict[str, dict] = _load_admin_users()
 
 # In-memory sessions (sufficient for 3 users)
 SESSIONS: dict[str, dict] = {}

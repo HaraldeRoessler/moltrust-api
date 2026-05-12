@@ -44,6 +44,8 @@ def publish_to_ipfs(vc_json: dict, name: str = None) -> str | None:
             }
         }).encode()
 
+        if not PINATA_API_URL.startswith(("http://", "https://")):
+            raise ValueError("PINATA_API_URL must use http(s)://")
         req = urllib.request.Request(
             PINATA_API_URL,
             data=payload,
@@ -53,7 +55,7 @@ def publish_to_ipfs(vc_json: dict, name: str = None) -> str | None:
             }
         )
 
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310 — scheme validated above
             result = json.loads(r.read())
             cid = result.get("IpfsHash")
             if cid:

@@ -24,7 +24,7 @@ api.moltrust.ch/x402/verify?did=did:moltrust:d34ed796a4dc4698
 
 #AIAgents #x402 #Base #A2A"""
 
-resp = requests.post("https://api.twitter.com/2/tweets", json={"text": text}, auth=auth)
+resp = requests.post("https://api.twitter.com/2/tweets", json={"text": text}, auth=auth, timeout=15)
 data = resp.json()
 if resp.status_code in (200, 201):
     print(f"Tweet posted: {data['data']['id']}")

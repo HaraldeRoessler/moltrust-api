@@ -260,7 +260,10 @@ def save_state(state):
 
 
 def post_hash(title):
-    return hashlib.md5(title.encode()).hexdigest()[:12]
+    # SHA-256 truncated to 12 hex chars. MD5 is broken (collision attacks);
+    # while this hash is non-security-critical (dedup only), avoiding MD5
+    # silences static-analysis noise and pre-empts future foot-guns.
+    return hashlib.sha256(title.encode()).hexdigest()[:12]
 
 
 # ── Lobster Math Solver ───────────────────────────────────────────────────────

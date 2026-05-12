@@ -12,3 +12,4 @@ jcs>=0.2.1
 python-multipart>=0.0.9
 starlette>=0.37.0
 APScheduler>=3.10.0
+defusedxml>=0.7.1

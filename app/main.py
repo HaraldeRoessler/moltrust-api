@@ -144,7 +144,7 @@ async def custom_swagger_ui():
   </div>
 </div>
 <div id="swagger-ui"></div>
-<script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js" integrity="sha384-wmyclcVGX/WhUkdkATwhaK1X1JtiNrr2EoYJ+diV3vj4v6OC5yCeSu+yW13SYJep" crossorigin="anonymous"></script>
 <script>
 function toggleTheme(){var c=document.documentElement.getAttribute('data-theme');var n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('mt-theme',n);}
 SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui',presets:[SwaggerUIBundle.presets.apis,SwaggerUIBundle.SwaggerUIStandalonePreset],layout:'BaseLayout',deepLinking:true});
@@ -306,7 +306,13 @@ async def _enrich_ip(ip: str) -> dict:
     info = {"org": None, "country": None}
     try:
         import urllib.request as _ur
-        req = _ur.Request(f"http://ip-api.com/json/{ip}?fields=org,country", headers={"User-Agent": "MolTrust/1.0"})
+        # HTTPS so geolocation data isn't MITM-able. ip-api.com supports
+        # HTTPS on its paid tier; on the free tier, callers should set
+        # MOLTRUST_IP_ENRICH_BASE to an HTTPS-capable provider.
+        _base = os.environ.get("MOLTRUST_IP_ENRICH_BASE", "https://ip-api.com").rstrip("/")
+        if not _base.startswith(("http://", "https://")):
+            return info  # refuse non-HTTP(S) bases
+        req = _ur.Request(f"{_base}/json/{ip}?fields=org,country", headers={"User-Agent": "MolTrust/1.0"})
         with _ur.urlopen(req, timeout=2) as r:
             import json as _j
             data = _j.loads(r.read())
@@ -1451,7 +1457,7 @@ async def register_seed(request: Request, req: SeedRequest):
     """Register a trusted seed agent. Requires ADMIN_KEY header."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(status_code=403, detail="Forbidden")
     async with db_pool.acquire() as conn:
         try:
@@ -2020,7 +2026,7 @@ async def get_inactive_agents(request: Request, days: int = Query(default=30, ge
     """Returns agents inactive for more than `days` days. Admin-only. RSAC Gap 3."""
     admin_key = request.headers.get("x-admin-key", "")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Admin key required")
 
     if not db_pool:
@@ -2520,7 +2526,7 @@ async def register_batch(request: Request):
     """Batch-register external agents with Merkle anchoring. Requires ADMIN_KEY."""
     admin_key = request.headers.get("x-admin-key", "")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Invalid or missing admin key")
 
     try:
@@ -4454,7 +4460,7 @@ async def create_violation_record(request: Request, body: ViolationRecordRequest
     """Record a protocol violation. Requires X-Admin-Key header. Tech Spec 2.7."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     record_id = str(uuid.uuid4())
@@ -4499,7 +4505,7 @@ async def reverse_violation(request: Request, body: ViolationReversalRequest, re
     """Reverse a violation record. Requires X-Admin-Key header. Tech Spec 2.7."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     reversal_date = body.reversal_date or datetime.datetime.utcnow().isoformat()
@@ -4715,7 +4721,7 @@ async def unrevoke_agent(
 
     admin_key = request.headers.get("x-admin-key", "")
     expected_admin = os.environ.get("ADMIN_KEY", "")
-    if not expected_admin or admin_key != expected_admin:
+    if not expected_admin or not admin_key or not secrets.compare_digest(admin_key, expected_admin):
         raise HTTPException(403, "Admin key required to unrevoke agents")
 
     async with db_pool.acquire() as conn:
@@ -4973,7 +4979,7 @@ async def spiffe_unbind(request: Request, spiffe_uri: str, api_key: str = Depend
 
     admin_key = request.headers.get("x-admin-key", "")
     expected_admin = os.environ.get("ADMIN_KEY", "")
-    if not expected_admin or admin_key != expected_admin:
+    if not expected_admin or not admin_key or not secrets.compare_digest(admin_key, expected_admin):
         raise HTTPException(403, "Admin key required to remove SPIFFE bindings")
 
     if not db_pool:
@@ -5052,7 +5058,7 @@ async def configure_delegation(request: Request, api_key: str = Depends(verify_a
             # Check admin
             admin_key = request.headers.get("x-admin-key", "")
             expected = os.environ.get("ADMIN_KEY", "")
-            if not expected or admin_key != expected:
+            if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
                 raise HTTPException(403, "Not authorized to configure delegation for this DID")
 
         await conn.execute("""
@@ -5310,7 +5316,7 @@ async def revoke_music_credential(request: Request, body: MusicRevokeRequest, cr
     """Revoke a music credential. Requires X-Admin-Key."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     async with db_pool.acquire() as conn:
@@ -5528,7 +5534,7 @@ async def ipr_admin_anchor(request: Request):
     """Admin: Trigger Merkle batch anchoring for all pending IPRs."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not admin_key or admin_key != expected:
+    if not admin_key or not expected or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Invalid admin key")
 
     if not db_pool:
@@ -5544,7 +5550,7 @@ async def ipr_admin_retry(request: Request):
     """Admin: Reset failed IPRs back to pending."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not admin_key or admin_key != expected:
+    if not admin_key or not expected or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Invalid admin key")
 
     if not db_pool:
@@ -5560,7 +5566,7 @@ async def ipr_admin_reconcile(request: Request):
     """Admin: Verify all anchored IPRs against chain and reset missing."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not admin_key or admin_key != expected:
+    if not admin_key or not expected or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Invalid admin key")
 
     if not db_pool:
@@ -5576,7 +5582,7 @@ async def ipr_admin_reanchor(request: Request):
     """Admin: Force re-anchor a specific IPR."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not admin_key or admin_key != expected:
+    if not admin_key or not expected or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Invalid admin key")
 
     body = await request.json()
@@ -5607,7 +5613,7 @@ async def register_batch(request: Request):
     """
     admin_key = request.headers.get("x-admin-key", "")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not admin_key or admin_key != expected:
+    if not admin_key or not expected or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Invalid admin key")
 
     if not db_pool:
