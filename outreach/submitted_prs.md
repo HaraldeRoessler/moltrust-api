@@ -105,3 +105,4 @@ Last updated: 2026-03-09
 - https://moltrust.ch/pypi → PyPI page
 - https://moltrust.ch/smithery → Smithery.ai listing
 - https://moltrust.ch/glama → Glama.ai listing
+awesome-x402: https://github.com/xpaysh/awesome-x402/pull/219
