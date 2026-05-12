@@ -9,6 +9,7 @@ Cron: 4x/day (07, 12, 17, 22 UTC)
 
 import os, sys, datetime, json, logging, traceback, random, re
 import httpx
+import psycopg2
 from requests_oauthlib import OAuth1
 import requests as req_lib
 
@@ -20,6 +21,7 @@ HEARTBEAT_FILE = os.path.join(DATA_DIR, "herald_heartbeat.json")
 STATE_FILE = os.path.join(DATA_DIR, "herald_state.json")
 
 FEED_URL = "https://api.moltrust.ch/guard/api/market/feed"
+DB_URL = os.environ.get("DATABASE_URL", "dbname=moltstack user=moltstack")
 DASHBOARD_URL = "https://moltrust.ch/integrity.html"
 X_API_URL = "https://api.twitter.com/2/tweets"
 
@@ -291,11 +293,24 @@ def fetch_feed() -> list:
 
 # ── Tweet generation ──
 
-def generate_anomaly_tweet(markets: list, state: dict) -> str | None:
-    """Generate a tweet from anomaly data via Claude."""
+def resolve_polymarket_slug(market_id: str) -> str | None:
+    """Resolve Polymarket slug from market ID via Gamma API."""
+    try:
+        resp = httpx.get(f"https://gamma-api.polymarket.com/markets/{market_id}", timeout=8)
+        if resp.status_code == 200:
+            slug = resp.json().get("slug")
+            if slug:
+                return f"https://polymarket.com/event/{slug}"
+    except Exception as e:
+        log.warning(f"Polymarket slug resolve failed for {market_id}: {e}")
+    return None
+
+
+def generate_anomaly_tweet(markets: list, state: dict) -> tuple:
+    """Generate a tweet from anomaly data via Claude. Returns (tweet, market_data) or (None, None)."""
     flagged = [m for m in markets if m.get("anomalyScore", 0) >= 30]
     if not flagged:
-        return None
+        return None, None
 
     # Avoid repeating last-tweeted market
     last_market_id = state.get("last_market_id", "")
@@ -320,6 +335,12 @@ def generate_anomaly_tweet(markets: list, state: dict) -> str | None:
 
     market_id = top.get("marketId", "")
     api_cta = f"api.moltrust.ch/integrity/{market_id}" if market_id else ""
+    polymarket_url = resolve_polymarket_slug(market_id) if market_id else None
+
+    cta_lines = f"Check it: {DASHBOARD_URL}"
+    if polymarket_url:
+        cta_lines += f"\nMarket: {polymarket_url}"
+    cta_lines += f"\nAPI: {api_cta}" if api_cta else ""
 
     context = (
         f"Write a single tweet (max 280 chars) based on this real anomaly data:\n\n"
@@ -328,16 +349,27 @@ def generate_anomaly_tweet(markets: list, state: dict) -> str | None:
         f"Signals: {', '.join(active) if active else 'multiple signals active'}\n"
         f"24h Volume Change: {fmt_vol(sigs.get('volumeChange24h', 0))}\n"
         f"Assessment: {top.get('assessment', 'Unusual trading patterns detected')}\n\n"
-        f"End the tweet with:\nCheck it: {DASHBOARD_URL}\nAPI: {api_cta}\n\n"
+        f"End the tweet with:\n{cta_lines}\n\n"
         f"Do NOT just describe the data. Find the sharp angle."
     )
 
     tweet = generate_with_claude(context)
-    if tweet and len(tweet) > 280 and api_cta in tweet:
+    # If too long, trim API line first, then Polymarket link if still over
+    if tweet and len(tweet) > 280 and api_cta and api_cta in tweet:
         tweet = tweet.replace(f"\nAPI: {api_cta}", "").replace(f" | API: {api_cta}", "")
+    if tweet and len(tweet) > 280 and polymarket_url and polymarket_url in tweet:
+        tweet = tweet.replace(f"\nMarket: {polymarket_url}", "").replace(f" | Market: {polymarket_url}", "")
     if tweet:
         state["last_market_id"] = market_id
-    return tweet
+    return tweet, {
+        "market_id": market_id,
+        "question": top.get("marketQuestion", ""),
+        "anomaly_score": top.get("anomalyScore", 0),
+        "signals": sigs,
+        "active_signals": active,
+        "polymarket_url": polymarket_url,
+        "assessment": top.get("assessment", ""),
+    } if tweet else (None, None)
 
 
 def generate_awareness_tweet(state: dict) -> str | None:
@@ -381,6 +413,56 @@ def generate_fallback_tweet(state: dict) -> str:
 
 
 # ── Main ──
+
+
+def insert_flag_record(market_data: dict, tweet_id: str) -> str | None:
+    """Insert a flag_record for outcome tracking."""
+    if not market_data or not market_data.get("market_id"):
+        return None
+    try:
+        conn = psycopg2.connect(DB_URL)
+        cur = conn.cursor()
+        import uuid
+        flag_id = f"flag-{market_data['market_id']}-{datetime.datetime.utcnow().strftime('%Y%m%d%H%M')}"
+
+        # Get price from Polymarket
+        price_at_flag = None
+        try:
+            resp = httpx.get(f"https://gamma-api.polymarket.com/markets/{market_data['market_id']}", timeout=8)
+            if resp.status_code == 200:
+                price_at_flag = resp.json().get("lastTradePrice")
+        except:
+            pass
+
+        slug = None
+        if market_data.get("polymarket_url"):
+            slug = market_data["polymarket_url"].split("/event/")[-1] if "/event/" in market_data["polymarket_url"] else None
+
+        cur.execute("""
+            INSERT INTO flag_records
+            (flag_id, market_id, market_question, polymarket_slug,
+             anomaly_score, price_at_flag, signals, status, created_tweet_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s)
+            ON CONFLICT (flag_id) DO NOTHING
+        """, (
+            flag_id,
+            market_data["market_id"],
+            market_data.get("question", ""),
+            slug,
+            market_data.get("anomaly_score", 0),
+            price_at_flag,
+            json.dumps(market_data.get("signals", {})),
+            tweet_id,
+        ))
+        conn.commit()
+        cur.close()
+        conn.close()
+        log.info(f"Flag record created: {flag_id} (market {market_data['market_id']})")
+        return flag_id
+    except Exception as e:
+        log.error(f"Failed to insert flag_record: {e}")
+        return None
+
 
 def run(dry_run: bool = False):
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -428,8 +510,9 @@ def run(dry_run: bool = False):
     tweet = None
     mode = "anomaly"
 
+    anomaly_market_data = None
     if markets:
-        tweet = generate_anomaly_tweet(markets, state)
+        tweet, anomaly_market_data = generate_anomaly_tweet(markets, state)
 
     if not tweet:
         mode = "awareness"
@@ -485,6 +568,13 @@ def run(dry_run: bool = False):
         state["last_tweet_id"] = tweet_ids[0]
         state["last_mode"] = mode
         state["consecutive_failures"] = 0
+
+        # Insert flag_record for outcome tracking (anomaly tweets only)
+        if mode == "anomaly" and anomaly_market_data:
+            flag_id = insert_flag_record(anomaly_market_data, tweet_ids[0])
+            if flag_id:
+                log.info(f"Outcome tracking: {flag_id}")
+
         # Track recent tweets for variety
         recent = state.get("recent_tweets", [])
         recent.append(parts[0][:100])
