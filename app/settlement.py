@@ -237,6 +237,21 @@ async def settle_prediction(conn, commitment_hash: str, result: dict) -> bool:
         """,
         outcome_data, correct, now, commitment_hash,
     )
+
+    # Invalidate trust score cache so prediction accuracy is recalculated
+    agent_did = row.get("agent_did") if isinstance(row, dict) else None
+    if not agent_did:
+        agent_row = await conn.fetchrow(
+            "SELECT agent_did FROM sports_predictions WHERE commitment_hash = $1",
+            commitment_hash
+        )
+        agent_did = agent_row["agent_did"] if agent_row else None
+    if agent_did:
+        await conn.execute(
+            "DELETE FROM trust_score_cache WHERE did = $1", agent_did
+        )
+        logger.info(f"Trust score cache invalidated for {agent_did}")
+
     return True
 
 

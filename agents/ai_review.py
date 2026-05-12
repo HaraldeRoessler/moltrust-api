@@ -165,7 +165,7 @@ async def call_openai(client: httpx.AsyncClient, document: str, mode: str) -> di
             "https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENAI_KEY}", "Content-Type": "application/json"},
             json=payload,
-            timeout=120
+            timeout=180
         )
         resp.raise_for_status()
         data = resp.json()
@@ -189,12 +189,12 @@ async def call_gemini(client: httpx.AsyncClient, document: str, mode: str) -> di
         "generationConfig": {"maxOutputTokens": GEMINI_MAX_TOKENS, "temperature": 0.3}
     }
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
     last_error = None
     for attempt in range(3):
         try:
-            resp = await client.post(url, json=payload, timeout=300)
+            resp = await client.post(url, json=payload, headers={"x-goog-api-key": GEMINI_KEY}, timeout=300)
             if resp.status_code == 503 and attempt < 2:
                 wait = 10 * (attempt + 1)
                 print(f"   Gemini 503 — retry {attempt+1}/2 in {wait}s...")
@@ -275,7 +275,7 @@ async def call_claude_synthesis(client: httpx.AsyncClient, openai_result: dict,
                 "Content-Type": "application/json"
             },
             json=payload,
-            timeout=120
+            timeout=180
         )
         resp.raise_for_status()
         data = resp.json()

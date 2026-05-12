@@ -80,7 +80,7 @@ Format as structured markdown with source citations."""
             "max_tokens": 2000,
             "temperature": 0.2,
         },
-        timeout=60.0,
+        timeout=180.0,
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
@@ -105,14 +105,15 @@ PAPER:
 
 Be specific and constructive. Format as structured markdown."""
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     resp = client.post(
         url,
+        headers={"x-goog-api-key": GEMINI_KEY},
         json={
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.4, "maxOutputTokens": 2000},
         },
-        timeout=60.0,
+        timeout=180.0,
     )
     resp.raise_for_status()
     data = resp.json()
@@ -151,7 +152,7 @@ Questions I Would Ask, and Deal-Breakers (if any).""",
             "max_tokens": 1500,
             "temperature": 0.7,
         },
-        timeout=60.0,
+        timeout=180.0,
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
@@ -202,7 +203,7 @@ Be direct and actionable. No filler.""",
                 }
             ],
         },
-        timeout=90.0,
+        timeout=180.0,
     )
     resp.raise_for_status()
     return resp.json()["content"][0]["text"]

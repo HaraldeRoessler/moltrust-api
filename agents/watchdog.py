@@ -16,6 +16,7 @@ logging.basicConfig(
 log = logging.getLogger("watchdog")
 
 # Agent definitions: name, max_hours without activity, check method
+# Moltbook Poster: DISABLED 2026-03-30 — Moltbook API down post Meta acquisition (500 errors since 2026-03-27)
 AGENTS = [
     {
         "name": "Herald",
@@ -34,13 +35,6 @@ AGENTS = [
         "heartbeat_file": None,
         "max_hours": 1.5,  # runs every 30min, give 1.5h grace
         "fallback_log": "ambassador.log",
-    },
-    {
-        "name": "Moltbook Poster",
-        "heartbeat_file": os.path.join(DATA_DIR, "moltbook_state.json"),
-        "heartbeat_ts_key": "last_post_time",
-        "max_hours": 72,  # Moltbook API 500 errors since 2026-03-27 (Meta acquisition)
-        "fallback_glob": "moltbook_*.md",
     },
     {
         "name": "News Scout",
@@ -122,6 +116,30 @@ def check_heartbeat(agent: dict, now: datetime.datetime) -> dict:
     return {"ok": False, "detail": "No check method configured"}
 
 
+
+def check_conformance_drift() -> dict:
+    """Check if CONFORMANCE.md files match live API checksum."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["/home/moltstack/moltguard/scripts/check_drift.sh"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            return {"ok": True, "detail": "CONFORMANCE.md in sync with API"}
+        elif result.returncode == 1:
+            # Extract drift details from output
+            lines = [l for l in result.stdout.strip().split("\n") if "DRIFT" in l or "Missing" in l]
+            detail = "; ".join(lines[:3]) if lines else "Drift detected"
+            return {"ok": False, "detail": detail}
+        else:
+            return {"ok": False, "detail": f"API unreachable (exit {result.returncode})"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "detail": "Drift check timed out (15s)"}
+    except Exception as e:
+        return {"ok": False, "detail": f"Drift check error: {e}"}
+
+
 def run():
     now = datetime.datetime.now(datetime.UTC)
     log.info(f"Watchdog run at {now.strftime('%Y-%m-%d %H:%M UTC')}")
@@ -133,6 +151,13 @@ def run():
         log.info(f"  {status} {agent['name']}: {result['detail']}")
         if not result["ok"]:
             alerts.append(f"❌ <b>{agent['name']}</b>: {result['detail']}")
+
+    # CONFORMANCE.md drift check
+    drift = check_conformance_drift()
+    status = "✅" if drift["ok"] else "❌"
+    log.info(f"  {status} CONFORMANCE Drift: {drift['detail']}")
+    if not drift["ok"]:
+        alerts.append(f"❌ <b>CONFORMANCE Drift</b>: {drift['detail']}")
 
     if alerts:
         msg = "🐕 <b>Watchdog Alert</b>\n\n" + "\n".join(alerts)

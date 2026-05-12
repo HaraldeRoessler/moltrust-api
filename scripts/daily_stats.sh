@@ -80,11 +80,16 @@ fi
 # === API Traffic Stats (12h) ===
 NGINX_LOG="/var/log/nginx/access.log"
 MCP_TOTAL=$(grep "/mcp" $NGINX_LOG 2>/dev/null | awk -v d="$(date -d '12 hours ago' '+%d/%b/%Y:%H')" '$4 > "["d' | wc -l)
-MCP_AUTH=$(grep "/mcp.*api_key=mt_" $NGINX_LOG 2>/dev/null | awk -v d="$(date -d '12 hours ago' '+%d/%b/%Y:%H')" '$4 > "["d' | wc -l)
+MCP_AUTH=$(grep "/mcp" $NGINX_LOG 2>/dev/null | grep "api_key=" | awk -v d="$(date -d '12 hours ago' '+%d/%b/%Y:%H')" '$4 > "["d' | wc -l)
 MCP_UNAUTH=$((MCP_TOTAL - MCP_AUTH))
 MCP_429=$(grep "/mcp" $NGINX_LOG 2>/dev/null | awk -v d="$(date -d '12 hours ago' '+%d/%b/%Y:%H')" '$4 > "["d && $9 == 429' | wc -l)
 UNIQUE_MCP_IPS=$(grep "/mcp" $NGINX_LOG 2>/dev/null | awk -v d="$(date -d '12 hours ago' '+%d/%b/%Y:%H')" '$4 > "["d {print $1}' | sort -u | wc -l)
 A2A_CALLS=$(grep 'well-known/a2a\|well-known/agent' $NGINX_LOG 2>/dev/null | awk -v d="$(date -d '12 hours ago' '+%d/%b/%Y:%H')" '$4 > "["d' | wc -l)
+
+TOP_CALLERS=$(grep "/mcp" $NGINX_LOG 2>/dev/null | \
+  awk -v d="$(date -d '12 hours ago' '+%d/%b/%Y:%H')" '$4 > "["d' | \
+  grep -o 'profile=[^& "]*' | sort | uniq -c | sort -rn | head -3 | \
+  awk '{printf "  %s: %s\n", $2, $1}')
 
 TG_MSG="$GREETING — MolTrust Stats
 
@@ -115,6 +120,8 @@ MCP Traffic (12h):
   Rate-limited: $MCP_429
   Unique IPs: $UNIQUE_MCP_IPS
   A2A Discovery: $A2A_CALLS
+  Top profiles:
+$TOP_CALLERS
 
 Platforms:"
 
