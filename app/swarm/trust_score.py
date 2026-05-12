@@ -37,6 +37,14 @@ ALPHA = 0.6   # direct score weight
 BETA  = 0.3   # propagated score weight
 GAMMA = 0.1   # cross-vertical bonus weight
 
+# Agent class trust modifiers (ZeroID Feature 1)
+AGENT_CLASS_MODIFIER = {
+    "orchestrator": 5.0,
+    "autonomous": 0.0,
+    "human_initiated": 0.0,
+    "copilot": -10.0,
+}
+
 VERTICAL_TYPES = {
     "VerifiedSkillCredential",
     "BuyerAgentCredential",
@@ -48,6 +56,53 @@ VERTICAL_TYPES = {
     "SkillEndorsementCredential",
 }
 
+async def compute_prediction_accuracy_bonus(conn, did: str) -> float:
+    """
+    Prediction accuracy bonus/malus for trust score.
+    Requires >= 3 settled predictions to activate.
+    Accuracy >= 60% → bonus up to +10
+    Accuracy < 40% → malus down to -10
+    Between 40-60% → 0 (neutral)
+    """
+    row = await conn.fetchrow(
+        """SELECT COUNT(*) as total,
+                  SUM(CASE WHEN correct THEN 1 ELSE 0 END) as wins
+           FROM sports_predictions
+           WHERE agent_did = $1 AND settled_at IS NOT NULL""",
+        did
+    )
+    if not row or row["total"] < 3:
+        return 0.0
+
+    total = row["total"]
+    wins = row["wins"] or 0
+    accuracy = wins / total
+
+    if accuracy >= 0.6:
+        # Linear scale: 60% → +2, 100% → +10
+        return round(2 + (accuracy - 0.6) / 0.4 * 8, 1)
+    elif accuracy < 0.4:
+        # Linear scale: 40% → -2, 0% → -10
+        return round(-2 - (0.4 - accuracy) / 0.4 * 8, 1)
+    else:
+        return 0.0
+
+
+
+async def compute_wallet_attestation_bonus(conn, did: str) -> float:
+    """
+    Wallet attestation bonus for trust score.
+    Reads wallet_score (0-20) from wallet_attestations table.
+    Only uses attestations < 30 min old (TTL).
+    """
+    row = await conn.fetchrow(
+        """SELECT wallet_score FROM wallet_attestations
+           WHERE did = $1 AND attested_at > NOW() - INTERVAL '30 minutes'""",
+        did
+    )
+    if not row:
+        return 0.0
+    return float(row["wallet_score"])
 
 def compute_time_decay(issued_at: datetime) -> float:
     """d_i = 2^(-Δt/90), Δt in Tagen. Whitepaper Section 4.2."""
@@ -293,11 +348,41 @@ async def compute_phase2_score(
     except Exception:
         pass
 
-    # 6. Final score
+    # 6. Prediction accuracy bonus/malus
+    prediction_bonus = 0.0
+    try:
+        prediction_bonus = await compute_prediction_accuracy_bonus(conn, did)
+    except Exception:
+        pass
+
+    # 7. Wallet attestation bonus (skin-in-the-game)
+    wallet_bonus = 0.0
+    try:
+        wallet_bonus = await compute_wallet_attestation_bonus(conn, did)
+    except Exception:
+        pass
+
+    # 8. Agent class modifier (ZeroID Feature 1)
+    agent_class_modifier = 0.0
+    try:
+        ac_row = await conn.fetchrow(
+            "SELECT agent_class FROM agents WHERE did = $1", did
+        )
+        if ac_row and ac_row["agent_class"]:
+            agent_class_modifier = AGENT_CLASS_MODIFIER.get(
+                ac_row["agent_class"], 0.0
+            )
+    except Exception:
+        pass
+
+    # 9. Final score
     raw = (ALPHA * direct_score
            + BETA * propagated_score
            + GAMMA * cross_vertical_bonus
-           + interaction_bonus)
+           + interaction_bonus
+           + prediction_bonus
+           + wallet_bonus
+           + agent_class_modifier)
     final_score = max(0, min(100, raw - sybil_penalty * 20 + inactivity_penalty))
     final_score = round(final_score, 1)
 
@@ -316,7 +401,10 @@ async def compute_phase2_score(
         "cross_vertical_bonus": cross_vertical_bonus,
         "interaction_bonus": interaction_bonus,
         "sybil_penalty": round(sybil_penalty, 2),
+        "prediction_bonus": prediction_bonus,
+        "wallet_bonus": wallet_bonus,
         "inactivity_penalty": inactivity_penalty,
+        "agent_class_modifier": agent_class_modifier,
         "endorser_count": len(unique_endorsers),
         "computation_method": "phase2",
         "withheld": False,
