@@ -115,10 +115,12 @@ export class MolTrustClient {
 
   constructor(cfg: MolTrustConfig, opts: ClientOptions = {}) {
     this.apiKey = cfg.apiKey ?? "";
-    this.baseUrl = (cfg.apiUrl ?? "https://api.moltrust.ch").replace(
-      /\/+$/,
-      "",
-    );
+    // Strip trailing slashes via a loop instead of `/\/+$/`. The regex
+    // form is polynomial-quadratic on pathological inputs like a long
+    // path full of trailing slashes; the loop is linear.
+    let _baseUrl = cfg.apiUrl ?? "https://api.moltrust.ch";
+    while (_baseUrl.endsWith("/")) _baseUrl = _baseUrl.slice(0, -1);
+    this.baseUrl = _baseUrl;
     this.fetchImpl = opts.fetchImpl ?? globalThis.fetch;
     const ttl = cfg.cacheTtlMs ?? 300_000;
     this.verifyCache = new LRUCache<VerifyResult>(ttl);

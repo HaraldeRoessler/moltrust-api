@@ -593,17 +593,14 @@ async def credit_middleware(request: Request, call_next):
                         )
         except Exception as e:
             # Unerwarteter DB-Fehler: NIEMALS stiller 2xx-Erfolg.
-            logger.error("Credit deduction DB error for %s: %s", caller_did, e)
+            # Log only the exception class — `e` itself can serialise
+            # asyncpg connection strings (with the password) and similar
+            # operational secrets into the log line.
+            logger.error("Credit deduction DB error for %s: %s", caller_did, type(e).__name__)
             return JSONResponse(
                 status_code=500,
                 content={"error": "credit_processing_error",
                          "detail": "Credit deduction failed unexpectedly."},
-            )
-        if deduct_failed:
-            return JSONResponse(
-                status_code=402,
-                content={"error": "insufficient_credits",
-                         "detail": "Not enough credits for this call."},
             )
 
     return response
@@ -3565,7 +3562,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse, RedirectResponse
 @limiter.limit("30/minute")
 async def join_redirect(request: Request, ref: str = Query(default=None, max_length=100)):
     if ref:
-        return RedirectResponse(f"https://moltrust.ch?ref={ref}", status_code=302)
+        # Percent-encode the ref so injection characters (\n, &, #, @, /)
+        # in a malicious referral string can't break out of the query
+        # value or rewrite the redirect target.
+        return RedirectResponse(
+            f"https://moltrust.ch?ref={urllib.parse.quote(ref, safe='')}",
+            status_code=302,
+        )
     return RedirectResponse("https://moltrust.ch", status_code=302)
 
 # --- ERC-8004 Bridge (Phase 1: Read-Only) ---
