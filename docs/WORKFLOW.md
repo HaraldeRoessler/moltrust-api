@@ -1,7 +1,7 @@
 # WORKFLOW.md — MolTrust Operational Discipline
 
-**Status:** V1, lebendiges Dokument
-**Letzte Aktualisierung:** 2026-05-12
+**Status:** V1.1, lebendiges Dokument
+**Letzte Aktualisierung:** 2026-05-13
 **Eigentümer:** Lars (Entscheidungen) + Claude/Claude Code (Ausführung gemäß diesem Dokument)
 **Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol) plus die Bot-/Agent-Infrastruktur
 
@@ -317,11 +317,27 @@ Nichts überspringen. Auch wenn es schnell gehen soll. Heute morgen war Recovery
 
 Sofortmaßnahmen in Reihenfolge:
 
-1. **Token rotieren** auf Service-Seite (GitHub, npm, etc.) — Token wird sofort tot, egal wo er noch im Logging steht.
-2. **Audit wo der Token überall war:** grep-rekursiv auf Server, in Logs, in cron-Scripts, in `.git/config`-Files, in `.env`-Files.
-3. **Migration auf sichereres Pattern** (SSH-Keys, credential-helper from env, Secrets-Manager).
-4. **Memory-Update** im Secret-Hygiene-Entry (#21).
-5. **Post-Mortem-Eintrag** in `docs/decisions/` mit Lesson-Learned.
+1. **Token rotieren** auf Service-Seite (GitHub, npm, Anthropic, etc.) — Token wird sofort tot, egal wo er noch im Logging steht.
+2. **Multi-Storage-Audit — Pflicht-Checkliste:** Token kann an mehreren Orten gleichzeitig gespeichert sein. Vor Token-als-Done-Markierung systematisch durch alle bekannten Speicherorte gehen:
+   - `~/.moltrust_secrets` (Standard env-Secrets)
+   - `~/<bot-name>/secrets/` Folder pro Bot (z.B. `~/moltycelbot/secrets/GITHUB_PAT`)
+   - `.git/config` aller relevanten Repos (URL-embedded Token Antipattern)
+   - `~/.bashrc`, `~/.profile`, `~/.zshrc` (shell exports)
+   - `crontab -l` (inline-exports in cron-Lines)
+   - systemd-Unit `Environment=` oder `EnvironmentFile=` Statements
+   - `~/.env` oder Project-spezifische `.env` Files
+   - Docker-secrets falls Docker-Container im Einsatz
+   - Logs (httpx default-Logging schreibt URL-embedded Tokens in plain text)
+   
+   Standard-Audit-Befehl: `grep -rE "ghp_|sk_live_|whsec_|github_pat_|sk-ant-" ~/.moltrust_secrets ~/*/secrets/ ~/.bashrc ~/.profile 2>/dev/null && crontab -l | grep -E "ghp_|sk_"`
+   
+3. **Token in allen gefundenen Orten ersetzen** mit gleichem neuen Wert. File-Permissions prüfen (0600 für secret-Files). Bei jedem Ort: Backup mit `.bak-<datum>`-Suffix anlegen.
+4. **Migration auf sichereres Pattern** (SSH-Keys, credential-helper from env, Secrets-Manager).
+5. **Post-Rotation-Verifikation:** für jeden Service der den Token nutzt: 1 manueller Test-Call mit dem neuen Token. Bei Bot-Services: nächsten cron-Tick abwarten ODER manuell triggern.
+6. **Memory-Update** im Secret-Hygiene-Entry (#21).
+7. **Post-Mortem-Eintrag** in `docs/decisions/` mit Lesson-Learned wenn die Rotation Cascade-Failure verursacht hat.
+
+**Lesson 13.05.26:** MoltyCel-PAT-Rotation am 12.05. hatte nur `.moltrust_secrets` aktualisiert, aber `~/moltycelbot/secrets/GITHUB_PAT` wurde übersehen → 24h+ 401-Storm in MoltyCelBot, alle Drafts verloren. Multi-Storage-Audit (Punkt 2 oben) hätte das verhindert.
 
 ### 6.3 Watchdog-Alert-Storm
 
@@ -396,23 +412,28 @@ Quartalsweise (3-Monats-Rhythmus): Review von WORKFLOW.md selbst. Was funktionie
 
 ## 10. Aktuelle offene Items aus WORKFLOW-Implementierung
 
-**Bootstrap-Hinweis:** Diese Sektion-10-Items folgen direkt aus diesem Dokument und sind nicht-Sprint-Items in dem Sinne dass sie selbst keine separaten Spec-Dokumente in `docs/specs/` benötigen. Sie sind die Erst-Implementierung des Workflow-Frameworks. Ab der V2 von WORKFLOW.md gilt die Spec-Pflicht für alle weiteren Changes.
-
 Items die direkt aus diesem Dokument folgen, aber noch nicht existieren:
 
 - [ ] `scripts/generate_status.py` schreiben (Sektion 5.1)
 - [ ] `scripts/weekly_health_check.sh` schreiben (Sektion 5.2)
 - [ ] `scripts/pre_sprint_check.sh` schreiben (Sektion 5.4)
-- [ ] `docs/BACKLOG.md` initialisieren mit aktuellen Items
+- [x] `docs/BACKLOG.md` initialisieren mit aktuellen Items (✓ V1.1 + V1.2, 13.05.26)
 - [ ] `docs/STATUS.md` erste Version manuell schreiben, dann auto-refresh aktivieren
 - [ ] `docs/decisions/` mit ersten 3-5 ADRs befüllen (Auto-Probe V2-Architektur, Pattern B credential-helper, etc.)
 - [ ] Pre-commit-hook für conflict-marker-detection (`git diff --check`)
 - [ ] Multi-Repo-Inventory-File mit Branch-Naming-Status
-- [ ] Telegram-Bot-Token rotation (heute identifiziert als httpx-Log-Leak)
-- [ ] Memory #25 TrustScout-Crontab-Lüge korrigieren
+- [x] Telegram-Bot-Token rotation (✓ 12.05.26, Lars server-side. Verbleibendes Backlog-Item: httpx-Log-Leak fix)
+- [x] Memory #25 TrustScout-Crontab-Lüge korrigieren (✓ via Memory-Replace 12.05.26 abends)
 
 Diese Items werden in `docs/BACKLOG.md` mit aufgenommen.
 
 ---
 
-**Ende WORKFLOW.md V1. Dies ist ein lebendiges Dokument. Updates via PR auf moltstack-Repo, mit klarem Changelog-Eintrag in einem `## Changelog`-Block (folgt in V2).**
+## Changelog
+
+- **2026-05-13 — V1.1**: Sektion 6.2 (Secret-Leak-Detected) substantiell erweitert mit Multi-Storage-Audit-Checkliste (8 Speicherorte) und Post-Rotation-Verifikations-Step. Lesson 13.05.26 dokumentiert (MoltyCel-PAT-Rotation übersah `moltycelbot/secrets/GITHUB_PAT` → 24h 401-Storm). Sektion 10 Bootstrap-Items: completed-Markers für BACKLOG.md (V1.1+V1.2 fertig), Telegram-Token-Rotation, Memory #25 Korrektur.
+- **2026-05-12 — V1**: Initial. Definiert State-of-Truth Architektur, Pre/In/Post-Sprint-Disziplinen, Periodic Routines, Notfall-Routinen, 10 verbotene Anti-Patterns. Bootstrap-Hinweis in Sektion 10: Bootstrap-Items brauchen keine eigene Spec.
+
+---
+
+**Ende WORKFLOW.md V1.1. Dies ist ein lebendiges Dokument. Updates via PR auf moltstack-Repo mit Changelog-Eintrag.**
