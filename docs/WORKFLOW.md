@@ -1,0 +1,418 @@
+# WORKFLOW.md — MolTrust Operational Discipline
+
+**Status:** V1, lebendiges Dokument
+**Letzte Aktualisierung:** 2026-05-12
+**Eigentümer:** Lars (Entscheidungen) + Claude/Claude Code (Ausführung gemäß diesem Dokument)
+**Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol) plus die Bot-/Agent-Infrastruktur
+
+---
+
+## 0. Warum dieses Dokument existiert
+
+Am 12.05.2026 wurde während des Auto-Probe-Sprints klar, dass operative Disziplin im MolTrust-Setup über die letzten Monate gedriftet ist. Sieben separate Recovery-Operationen an einem Tag — Sprint-Rollback, Working-Tree-Mess in drei Repos, PAT-Leak in `.git/config`, Memory-Lüge über TrustScout-Cron, Hook-Bug, CONFORMANCE-Drift, Telegram-Token im Log. Keine dieser Sachen war an dem Tag neu entstanden. Alle waren akkumulierte schlafende Fehler, die niemand systematisch geprüft hatte.
+
+Dieses Dokument definiert die Routinen, die solche Akkumulation verhindern. Es ersetzt mündliche Vereinbarungen und Memory-Einträge mit Disziplinen, die nachvollziehbar im git versioniert sind.
+
+**Was dieses Dokument nicht ist:** kein Spec-Dokument für Features, kein Compliance-Dokument für Externe, kein Marketing. Internes Operating Manual.
+
+## 1. State-of-Truth Architektur
+
+Das größte heutige Problem war, dass kein einzelner Ort definitiv den Zustand des Systems beschrieb. Memory hatte Lügen, Server-State war undokumentiert, Specs lebten teilweise nur in Konversationen.
+
+Ab jetzt: **eine klare Aufteilung mit dokumentierten Zuständigkeiten.**
+
+### 1.1 Was in Claude-Memory lebt
+
+Nur das hier:
+
+- Identitäts- und Kontextinfo über Lars und das Team (Namen, Rollen, Background)
+- Verhaltensregeln und Kommunikations-Präferenzen (Compact Mode, Sprache, Ton)
+- Strategie-Prinzipien und Positionierung (mach-statt-erklär, IMDA-Framework, etc.)
+- Session-Rituale (Health-Check beim Start, Halluzinations-Guards)
+- Kurze Pointer zu wichtigen aktuellen Sprints mit Verweis auf `docs/sprints/`
+
+Was NICHT in Memory gehört:
+- Operativer System-State (was läuft auf welchem Port)
+- Cron-Job-Listen (drift permanent)
+- Branch-Namen und Commit-SHAs außer den durabel-relevanten
+- Tabellen-Schema-Details
+- Token-Werte oder Credentials
+
+**Regel:** Wenn ein Memory-Eintrag älter als 14 Tage operative Detail-Info enthält, wird er gegen die Realität geprüft oder gelöscht. Drift wird aktiv erkannt und behoben.
+
+### 1.2 STATUS.md — laufender System-Zustand
+
+Datei: `~/moltstack/docs/STATUS.md`
+
+**Inhalt:** automatisch täglich aktualisierter Operating-State des Systems. Mensch-lesbar, kurz.
+
+Sections:
+- Running Services (systemctl-aktive Services mit Ports)
+- Active Cron Jobs (mit Schedule, Script-Pfad, was sie schreiben)
+- Active Branches (lokal + remote, mit last-commit-date)
+- Open PRs (über alle moltrust-relevanten Repos)
+- Working-Tree-Status (dirty/clean pro Repo)
+- Stashed Work (mit Beschreibung warum es deferred ist)
+- Known Drift (zwischen verschiedenen Locations)
+- DB Schema Drift (Tables nicht in migrations vs Tables in migrations)
+
+**Update-Mechanismus:** cron-Job `0 7 * * *` läuft `scripts/generate_status.py`, schreibt STATUS.md, commitet auto auf einen `chore/status-auto`-Branch (nicht auf main). Lars reviewt einmal pro Woche und mergt manuell.
+
+**Wenn STATUS.md älter als 24h ist:** Warnung in Telegram-Watchdog-Output.
+
+### 1.3 docs/specs/ — Feature-Spezifikationen
+
+Pfad: `~/moltstack/docs/specs/`
+
+**Inhalt:** alle Specs für aktuelle und kommende Features, mit explizitem Layer-Scope.
+
+Format pro Spec: ein Markdown-File `YYYY-MM-DD_<feature-name>.md` mit Sections:
+
+1. Goal (was wir erreichen)
+2. Non-Goals (was wir explizit nicht tun)
+3. Architecture-Layer-Scope (welche Code-Layer betroffen sind — Pflichtfeld nach Auto-Probe-Lesson)
+4. Data-Model-Changes (welche DB-Tables/Columns dazukommen oder sich ändern)
+5. API-Contract-Changes (welche Endpoints neu oder modifiziert)
+6. Migration-Path (für existierende User/Data)
+7. Rollback-Plan
+8. Success-Criteria
+9. Open Decisions
+
+**Regel:** kein Sprint startet ohne Spec mit allen 9 Sections gefüllt. Architecture-Layer-Scope ist nach Auto-Probe-Drama 12.05.26 verpflichtend explizit.
+
+### 1.4 docs/decisions/ — Architecture Decision Records
+
+Pfad: `~/moltstack/docs/decisions/`
+
+**Inhalt:** kurze 1-Pager pro durabel-wichtige Entscheidung. Format: `NNNN-<slug>.md` (sequenzielle Nummerierung).
+
+Pro Decision:
+- Datum
+- Status: Proposed / Accepted / Superseded / Deprecated
+- Context (warum stand diese Entscheidung an)
+- Decision (was wir entschieden haben)
+- Consequences (was das nach sich zieht)
+- Alternatives considered
+
+Beispiele für Decision-Worthy:
+- "Auto-Probe als mounted sub-app statt globale Middleware" (V2-Architektur-Entscheidung)
+- "Pattern B credential-helper statt SSH für moltrust-protocol Repo" (Token-Recovery)
+- "Memory-Caps und Alerting-Thresholds für Probe-Spawn"
+
+Nicht decision-worthy: Implementations-Details, Bugfixes, kosmetische Änderungen.
+
+### 1.5 docs/sprints/ — Sprint-Plans und Reports
+
+Pfad: `~/moltstack/docs/sprints/`
+
+**Inhalt:** Pre-Deploy-Reports, Post-Deploy-Reports, Workflow-Pläne für laufende Sprints (z.B. `2026-05-12_smithery-v2-workflow.md`).
+
+Lebenszyklus pro Sprint:
+1. Sprint-Plan vorher (geht in `docs/specs/`)
+2. Pre-Deploy-Report vor Cutover (geht in `docs/sprints/`)
+3. Post-Deploy-Report nach Cutover (geht in `docs/sprints/`)
+4. Bei Failure: Post-Mortem in `docs/sprints/`
+
+### 1.6 audits/ — Audit-Outputs und Diagnose-Artefakte
+
+Pfad: `~/moltstack/audits/`
+
+**Inhalt:** Static-Analysis-Outputs, GPT-5-Verification-Bundles, Header-Captures, andere Diagnose-Outputs.
+
+Pro Datei: `YYYY-MM-DD_<topic>.md`. Diese Dateien sind "Forensik-Material", werden nicht gelöscht, dienen als historischer Beweis was zu welchem Zeitpunkt geprüft wurde.
+
+### 1.7 Backlog
+
+Pfad: `~/moltstack/docs/BACKLOG.md`
+
+**Inhalt:** Liste aller offenen Items mit Severity und letztem Touch-Date. Sortiert nach Severity.
+
+Format:
+```
+## High
+- [WORKFLOW.md fehlt] (added 2026-05-12, owner Lars)
+- [TrustScout reanimate or decommission] (added 2026-05-12)
+
+## Medium
+- ...
+
+## Low
+- ...
+```
+
+**Regel:** jeder Sprint-Start beginnt mit Backlog-Review. Items älter als 30 Tage ohne Bewegung werden hinterfragt: ist es noch relevant, oder gestrichen?
+
+## 2. Pre-Sprint-Checklist
+
+Vor jedem produktiven Code-Sprint geht durch:
+
+### 2.1 State-Check
+
+- [ ] `cat docs/STATUS.md` — wann zuletzt aktualisiert? Wenn älter als 24h: refresh
+- [ ] `git status` in allen relevanten Repos — alle clean? Sonst erst Working-Tree-Triage
+- [ ] `cat docs/BACKLOG.md` — gibt es höhere-Prio-Items als das geplante?
+- [ ] Memory-Realitäts-Check: stimmt Memory zur betroffenen Komponente noch? Wenn unsicher: live curl/grep/psql
+
+### 2.2 Spec-Check
+
+- [ ] Spec in `docs/specs/` existiert für diesen Sprint
+- [ ] Alle 9 Sections gefüllt, insbesondere **Architecture-Layer-Scope**
+- [ ] Open Decisions sind beantwortet
+- [ ] Rollback-Plan ist explizit
+
+### 2.3 Cross-Review
+
+Für Sprints in folgenden Kategorien ist Cross-Review verpflichtend:
+- Security-kritisch (Auth, Tokens, Permissions, Encryption)
+- Architektur-kritisch (Middleware, Service-Topologie, API-Contracts)
+- Multi-Layer-Operationen (DB-Migration + API + Cron in einem Sprint)
+- Datenmodell-Migrationen mit existing-data-Impact
+
+Cross-Review-Format: Spec wird vor Implementation an ein zweites LLM (GPT-5, DeepSeek, oder Kimi) geschickt mit explizitem Auftrag "find architecture gaps and missing risk surface". Mindestens eine Antwort-Iteration bevor Code geschrieben wird.
+
+**Wenn Cross-Review skipped wird:** Begründung im Sprint-Spec dokumentieren. Skip ohne Begründung ist Disziplinverstoß.
+
+### 2.4 Bundle-Size-Check
+
+Wenn die Spec impliziert dass mehr als ~50KB Code geschrieben wird, splitten in:
+- REST-Bundle (HTTP-Endpoints, Middleware, Auth)
+- MCP-Bundle (MCP-Tools, FastMCP-Integration)
+- DB-Bundle (Migrations, Schema-Drift-Checks)
+- Test-Bundle
+
+Grund: `ai_review.py` truncated bei ~60KB. Ein bundle größer als 50KB hat kein zuverlässiges Cross-Review.
+
+## 3. In-Sprint-Disziplin
+
+### 3.1 Pre-Commit-Diff-Verifikation
+
+Vor jedem Commit, ohne Ausnahme:
+
+```bash
+git diff --cached --stat        # Anzahl Files + Zeilen-Anzahl
+git diff --cached --name-only   # Welche Files
+git diff --cached | head -60    # Erste 60 Zeilen content review
+```
+
+Wenn der Diff unexpected größer ist als erwartet, oder Files enthält die nicht erwartet wurden: STOP, untersuchen.
+
+**Verboten:** `git commit -a` (commitet alles unstaged, ohne explizite Selektion).
+
+### 3.2 Pre-Push-Hygiene
+
+Pre-Push-Hook scannt für Secret-Patterns. Aber: Hook scannt nur Diffs, nicht `.git/config`. Manuell zusätzlich:
+
+```bash
+grep -E "https://ghp_|https://github_pat_|@github\.com" .git/config
+```
+
+Sollte leer sein. Wenn nicht: Token-in-URL Antipattern, fixen vor push.
+
+### 3.3 Architecture-Briefing-Approval
+
+Wenn ein Sprint Multi-Layer-Code-Änderungen impliziert (z.B. Middleware + Cron + API + DB), gilt:
+
+1. Architecture-Brief schreiben (1-Pager, was wird wo geändert)
+2. Lars approved den Brief
+3. Erst dann Implementation
+4. Bei Spec-Abweichung während Implementation: stop, neuen Brief, neue Approval
+
+**Verboten:** Implementation ohne Brief bei Multi-Layer-Sprints. Solo-LLM-Coding für security/architecture-critical Code.
+
+### 3.4 Cross-LLM-Verification bei kritischen Entscheidungen
+
+Wenn während des Sprints eine architektonische Mid-Course-Korrektur nötig ist (z.B. "Skip-Liste zu eng, soll ich erweitern oder umstrukturieren?"): Cross-Review mit zweitem LLM vor Entscheidung. Nicht Solo entscheiden.
+
+## 4. Post-Sprint-Hygiene
+
+### 4.1 Sofort nach Deploy
+
+- [ ] Smoke-Tests gegen Production-Endpoints
+- [ ] Watchdog-Logs scannen auf neue Errors
+- [ ] STATUS.md update triggern
+- [ ] Sprint-Post-Deploy-Report in `docs/sprints/` schreiben (Stand, was funktioniert hat, was Backlog wurde)
+
+### 4.2 Working-Tree-Hygiene
+
+Nach Sprint-Ende:
+
+```bash
+git status
+```
+
+Erwartung: clean (außer audits/ untracked, falls bewusst).
+
+Wenn modified Files oder unexpected untracked Files: nicht in nächsten Sprint mitschleppen. Entweder committen oder explizit stashen mit erklärendem Stash-Namen.
+
+Stash-Namen-Konvention: `pre-<sprint-name>-WIP-<short-description>`. Beispiel: `pre-auto-probe-deploy-2026-05-12-WIP-incl-prediction-accuracy`.
+
+Stashes älter als 30 Tage werden aktiv aufgelöst — entweder committen, dropen, oder in eine eigene branch. Nicht ewig stashen.
+
+### 4.3 Memory-Realitäts-Sync
+
+Wenn der Sprint Memory-Inhalte betraf (z.B. neue Services hinzugefügt, alte entfernt): Memory-Eintrag aktualisieren. Wenn Memory-Eintrag durch den Sprint outdated wurde: aktualisieren oder löschen.
+
+Beispiel von heute: Memory #25 sagte "TrustScout crontab 4x/day". Reality: scout.py läuft 2x/day, trustscout.py wird gar nicht getriggert. Memory-Eintrag wäre nach Sprint-Cleanup geupdated worden.
+
+## 5. Periodic Routines (automatisch)
+
+### 5.1 Daily — STATUS.md auto-refresh
+
+Cron: `0 7 * * * cd ~/moltstack && python3 scripts/generate_status.py`
+
+Output: `docs/STATUS.md` mit aktuellem System-State, commited auto auf `chore/status-auto`-Branch. Bei drift gegen Memory: Telegram-Alert.
+
+### 5.2 Weekly — Multi-Repo-Health-Check
+
+Cron: `0 8 * * 1` (Montag früh)
+
+Script `scripts/weekly_health_check.sh` läuft durch:
+- Alle Repos `git status` — clean?
+- Alle Repos `git fetch && git log --oneline origin/main..main` — lokale unpushed?
+- Alle `.git/config` Files — Token-URLs?
+- Alle Stashes älter 30 Tage
+- Memory-Drift-Check gegen STATUS.md
+
+Output: Telegram-Report. Wenn Issues gefunden: explizite Tasks für Lars.
+
+### 5.3 Monthly — Audit-Recap
+
+Cron: `0 9 1 * *` (1. des Monats)
+
+Script läuft durch:
+- Token-Rotation-Status (welche PATs/API-Keys laufen in <60 Tagen ab?)
+- Memory-Hygiene-Status (Edit-Count, Realitäts-Drift)
+- Backlog-Aging (Items älter als 30 Tage ohne Bewegung)
+- Audit-Trail-Vollständigkeit (alle Sprints haben Post-Deploy-Report?)
+
+Output: Markdown-Report im audits/-Folder + Telegram-Summary.
+
+### 5.4 On-Demand — Pre-Sprint-Health-Check
+
+Manuell vor jedem Sprint:
+
+```bash
+bash scripts/pre_sprint_check.sh
+```
+
+Output: STATUS.md-refresh, Working-Tree-Check pro Repo, Memory-Spot-Check, Backlog-Top-5.
+
+## 6. Notfall-Routinen
+
+### 6.1 Production-Regression-Detected
+
+Schritt für Schritt, nicht ad-hoc:
+
+1. **Halt all destructive operations.** Kein Force-push, kein `git stash pop`, kein Service-Restart.
+2. **Static-Analysis erstellen** — vollständiger Snapshot des aktuellen State (Service-Status, Route-Inventory, Branch-State, Stash-State). Heute morgen: `audits/2026-05-12_static-analysis.md`.
+3. **Cross-LLM-Validation** — Static-Analysis an GPT-5/DeepSeek/Kimi schicken mit Frage "validate findings, propose recovery path".
+4. **Recovery-Plan dokumentieren** vor Ausführung — als File in `docs/sprints/`.
+5. **Lars approved Recovery-Plan** vor irgendwelchen destruktiven Schritten.
+6. **Recovery sequenziell ausführen** mit Verifikation zwischen Schritten.
+7. **Post-Recovery-Report** in `docs/sprints/` schreiben.
+
+Nichts überspringen. Auch wenn es schnell gehen soll. Heute morgen war Recovery-Zeit-Insgesamt ~6h, das ist akzeptabel bei einem Production-Issue.
+
+### 6.2 Secret-Leak-Detected
+
+Sofortmaßnahmen in Reihenfolge:
+
+1. **Token rotieren** auf Service-Seite (GitHub, npm, etc.) — Token wird sofort tot, egal wo er noch im Logging steht.
+2. **Audit wo der Token überall war:** grep-rekursiv auf Server, in Logs, in cron-Scripts, in `.git/config`-Files, in `.env`-Files.
+3. **Migration auf sichereres Pattern** (SSH-Keys, credential-helper from env, Secrets-Manager).
+4. **Memory-Update** im Secret-Hygiene-Entry (#21).
+5. **Post-Mortem-Eintrag** in `docs/decisions/` mit Lesson-Learned.
+
+### 6.3 Watchdog-Alert-Storm
+
+Wenn Watchdog viele Alerts in kurzer Zeit sendet:
+
+1. **Diagnose-First** — was sagt der Watchdog konkret, ist es ein echtes Issue oder false-positive?
+2. **Silencing nur wenn klar false-positive** — temp Edit mit `# TEMP DISABLED <date> — <reason>` Kommentar.
+3. **Diagnostik-Session schedulen** für die echte Ursache, nicht das Symptom.
+4. **Re-Enable** nach Diagnose mit echtem Fix, nicht Silence-permanent.
+
+## 7. Cross-Repo-Disziplin
+
+### 7.1 Repo-Inventory
+
+Aktive MolTrust-Repos:
+- `~/moltstack` — Haupt-API + Agents
+- `~/moltguard` — MoltGuard-Service
+- `~/moltrust-protocol` — Specs + Conformance-Docs
+- `~/trouvart` — separates Projekt (außerhalb MolTrust-Scope)
+
+Jedes Repo hat eigene Hygiene-Verantwortung. Multi-Repo-Operationen (z.B. moltstack-Code referenziert moltguard-Script) brauchen explizite Cross-Repo-Dependency-Documentation.
+
+### 7.2 Branch-Naming
+
+Konvention pro Repo:
+- `main` oder `master` — produktiver Stand
+- `feature/<name>` — neue Features in Entwicklung
+- `chore/<name>` — Hygiene, Refactoring, Doku-Updates
+- `fix/<name>` — Bugfixes
+- `audit/<name>` — Audit-Branches, oft lokal-only
+
+Branch-Naming inkonsistent zwischen Repos (moltguard nutzt `master`, moltstack `main`) ist Backlog-Item für Vereinheitlichung.
+
+### 7.3 Cross-Repo-Dependencies dokumentieren
+
+Wenn Code in Repo A auf Files in Repo B referenziert: explizit im Commit-Body. Beispiel:
+
+```
+feat(watchdog): conformance drift cron + remove dead Moltbook poster
+
+Dependency: ../moltguard/scripts/check_drift.sh (committed in separate repo as 41159b0)
+```
+
+So findet man bei Disaster-Recovery die richtige Reihenfolge.
+
+## 8. Verboten
+
+Diese Patterns sind verboten, ohne Ausnahme:
+
+- `git commit -a` (commitet alles unselektiert)
+- `git stash pop` ohne explizite Selektion welche Files
+- `git push --no-verify` ohne dokumentierte Begründung im Commit
+- `git push --force` auf shared Branches
+- HTTPS Git-Remote mit URL-embedded Token (`https://ghp_xxx@github.com/...`)
+- Bash-Scripts mit `set -x` wenn sie Secrets handhaben
+- API-Keys oder Tokens hardcoded in Code
+- Solo-LLM-Implementation für Security oder Architecture-kritischen Code
+- Sprint-Start ohne Spec mit allen 9 Sections
+- Memory-Eintrag mit operativen Details ohne 14-Tage-Drift-Check
+
+## 9. Mess-Punkte für WORKFLOW.md selbst
+
+Dieses Dokument muss wirken. Mess-Punkte:
+
+- **Anzahl Recovery-Operationen pro Monat:** Ziel: <2/Monat. Auto-Probe-Drama-Tag war Anomalie, sollte nicht Norm sein.
+- **Working-Tree-Mess-Detected-Rate:** Wenn weekly_health_check.sh dirty Trees findet: kein Erfolg.
+- **Memory-Drift-Vorfälle:** Wenn Memory-Realitäts-Sync (5.1) regelmäßig Drift findet: Memory-Hygiene-Disziplin nicht aktiv.
+- **Stale Stashes >30 Tage:** Ziel: 0.
+- **Cross-Review-Skip-Rate bei kritischen Sprints:** Ziel: 0% bei Security/Architecture.
+
+Quartalsweise (3-Monats-Rhythmus): Review von WORKFLOW.md selbst. Was funktioniert? Was nicht? Updates oder Vereinfachungen.
+
+## 10. Aktuelle offene Items aus WORKFLOW-Implementierung
+
+**Bootstrap-Hinweis:** Diese Sektion-10-Items folgen direkt aus diesem Dokument und sind nicht-Sprint-Items in dem Sinne dass sie selbst keine separaten Spec-Dokumente in `docs/specs/` benötigen. Sie sind die Erst-Implementierung des Workflow-Frameworks. Ab der V2 von WORKFLOW.md gilt die Spec-Pflicht für alle weiteren Changes.
+
+Items die direkt aus diesem Dokument folgen, aber noch nicht existieren:
+
+- [ ] `scripts/generate_status.py` schreiben (Sektion 5.1)
+- [ ] `scripts/weekly_health_check.sh` schreiben (Sektion 5.2)
+- [ ] `scripts/pre_sprint_check.sh` schreiben (Sektion 5.4)
+- [ ] `docs/BACKLOG.md` initialisieren mit aktuellen Items
+- [ ] `docs/STATUS.md` erste Version manuell schreiben, dann auto-refresh aktivieren
+- [ ] `docs/decisions/` mit ersten 3-5 ADRs befüllen (Auto-Probe V2-Architektur, Pattern B credential-helper, etc.)
+- [ ] Pre-commit-hook für conflict-marker-detection (`git diff --check`)
+- [ ] Multi-Repo-Inventory-File mit Branch-Naming-Status
+- [ ] Telegram-Bot-Token rotation (heute identifiziert als httpx-Log-Leak)
+- [ ] Memory #25 TrustScout-Crontab-Lüge korrigieren
+
+Diese Items werden in `docs/BACKLOG.md` mit aufgenommen.
+
+---
+
+**Ende WORKFLOW.md V1. Dies ist ein lebendiges Dokument. Updates via PR auf moltstack-Repo, mit klarem Changelog-Eintrag in einem `## Changelog`-Block (folgt in V2).**
