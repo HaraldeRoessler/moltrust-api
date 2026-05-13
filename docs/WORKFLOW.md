@@ -412,6 +412,8 @@ Quartalsweise (3-Monats-Rhythmus): Review von WORKFLOW.md selbst. Was funktionie
 
 ## 10. Aktuelle offene Items aus WORKFLOW-Implementierung
 
+**Bootstrap-Hinweis:** Diese Sektion-10-Items folgen direkt aus diesem Dokument und sind nicht-Sprint-Items in dem Sinne dass sie selbst keine separaten Spec-Dokumente in `docs/specs/` benötigen. Sie sind die Erst-Implementierung des Workflow-Frameworks. Ab der V2 von WORKFLOW.md gilt die Spec-Pflicht für alle weiteren Changes.
+
 Items die direkt aus diesem Dokument folgen, aber noch nicht existieren:
 
 - [ ] `scripts/generate_status.py` schreiben (Sektion 5.1)
@@ -431,7 +433,7 @@ Diese Items werden in `docs/BACKLOG.md` mit aufgenommen.
 
 ## Changelog
 
-- **2026-05-13 — V1.1**: Sektion 6.2 (Secret-Leak-Detected) substantiell erweitert mit Multi-Storage-Audit-Checkliste (8 Speicherorte) und Post-Rotation-Verifikations-Step. Lesson 13.05.26 dokumentiert (MoltyCel-PAT-Rotation übersah `moltycelbot/secrets/GITHUB_PAT` → 24h 401-Storm). Sektion 10 Bootstrap-Items: completed-Markers für BACKLOG.md (V1.1+V1.2 fertig), Telegram-Token-Rotation, Memory #25 Korrektur.
+- **2026-05-13 — V1.1**: Sektion 6.2 (Secret-Leak-Detected) substantiell erweitert mit Multi-Storage-Audit-Checkliste (8 Speicherorte) und Post-Rotation-Verifikations-Step. Lesson 13.05.26 dokumentiert (MoltyCel-PAT-Rotation übersah `moltycelbot/secrets/GITHUB_PAT` → 24h 401-Storm). Sektion 10 Bootstrap-Items: completed-Markers für BACKLOG.md (V1.1+V1.2 fertig), Telegram-Token-Rotation, Memory #25 Korrektur. Bootstrap-Hinweis-Paragraph aus V1 bleibt erhalten (ungewollt im Initial-V1.1-Edit entfernt, via Follow-up-Commit restored).
 - **2026-05-12 — V1**: Initial. Definiert State-of-Truth Architektur, Pre/In/Post-Sprint-Disziplinen, Periodic Routines, Notfall-Routinen, 10 verbotene Anti-Patterns. Bootstrap-Hinweis in Sektion 10: Bootstrap-Items brauchen keine eigene Spec.
 
 ---
