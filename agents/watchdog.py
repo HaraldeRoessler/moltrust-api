@@ -42,18 +42,14 @@ AGENTS = [
         "max_hours": 26,  # runs 1x/day, give 2h grace
         "fallback_glob": None,
     },
-    # TEMP DISABLED 2026-05-13 — TrustScout heartbeat 41h+ stale, alert spam.
-    # (Originally applied 2026-05-12, re-applied 2026-05-13 after branch rebase.)
-    # Diagnostic session scheduled 2026-05-13. Restore by uncommenting the
-    # dict below. Reanimation likely requires resolving the cron-calls-
-    # scout.py-not-trustscout.py discrepancy found in today's audit.
-    # {
-    #     "name": "TrustScout",
-    #     "heartbeat_file": os.path.join(DATA_DIR, "trustscout_state.json"),
-    #     "heartbeat_ts_key": "last_post_time",
-    #     "max_hours": 26,  # 2 posts/day via crontab, 24h + 2h grace
-    #     "fallback_glob": None,
-    # },
+    # REMOVED 2026-05-13 — TrustScout-Monitoring via state-file-field
+    # ist strukturell unzuverlaessig (multi-writer trustscout.py + moltguard.py
+    # schreiben dasselbe File, last_post_time kann stale werden ohne dass Posts
+    # ausfallen). Diagnose 13.05.26: Posts auf Moltbook funktionieren weiter
+    # (verifiziert via MolTrust Telegram Stats), State-File-Update ist nicht
+    # zuverlaessiges Health-Signal. Falls zukuenftig TrustScout-Health-Check
+    # gewuenscht: separater Check direkt gegen Moltbook-Post-Resultat (nicht
+    # state-file). Bis dahin: kein Watchdog-Eintrag.
 ]
 
 
