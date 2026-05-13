@@ -1,6 +1,6 @@
 # BACKLOG.md — MolTrust Open Items
 
-**Status:** V1.1, lebendiges Dokument
+**Status:** V1.2, lebendiges Dokument
 **Letzte Aktualisierung:** 2026-05-13
 **Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol)
 **Definiert durch:** WORKFLOW.md Sektion 1.7
@@ -20,13 +20,6 @@
 ---
 
 ## High
-
-### TrustScout: reanimate oder decommission
-- **Status:** Open
-- **Aufwand:** M
-- **Added:** 2026-05-12
-- **Source:** Konversation 12.05.26 (Auto-Probe-Drama-Tag), Memory #25
-- **Details:** Drei Scout-Files koexistieren (`scout.py`, `trustscout.py`, `news_scout.py`) — nur scout.py läuft 2x/day per cron, trustscout.py orphaned. DB-Heartbeat 74 Tage alt. Heartbeat-File 41h alt. Watchdog temporär silenced. Decision: reanimate via cron auf trustscout.py umstellen ODER decommission permanent + Code-Cleanup.
 
 ### Telegram-Bot httpx-Logging-Leak fix
 - **Status:** Open
@@ -57,20 +50,6 @@
 ---
 
 ## Medium
-
-### TrustScout-Silencing als separater Commit
-- **Status:** Open
-- **Aufwand:** S
-- **Added:** 2026-05-12
-- **Source:** WORKFLOW.md Sektion 4.2 Working-Tree-Hygiene
-- **Details:** TEMP DISABLED watchdog.py-Änderung lebt aktuell als uncommitted Working-Tree-Modifikation. Sollte auf `chore/trustscout-silence-2026-05-12` Branch committed werden — bis Reanimate/Decommission-Decision getroffen ist.
-
-### Memory #25 TrustScout-Crontab-Lüge korrigieren
-- **Status:** Open
-- **Aufwand:** S
-- **Added:** 2026-05-12
-- **Source:** Diagnostic 12.05.26
-- **Details:** Memory sagt "TrustScout (crontab 4x/day)" — Realität: scout.py läuft 2x/day, trustscout.py wird gar nicht getriggert. Memory-Realitäts-Sync (WORKFLOW Sektion 4.3) muss greifen.
 
 ### flag_records.anomaly_score integer → numeric(10,4) migration
 - **Status:** Open
@@ -223,6 +202,20 @@
 - **Source:** Harald-Mail
 - **Details:** Harald hat eigene PROFILE.md die das tatsächliche CAEP-Wire-Format dokumentiert (consistency_level, evaluation_context, registry_signature Fields nicht in offizieller PR16-Description). Übernehmen als authoritative docs für CAEP v1.x.
 
+### trustscout.py + 2 systemd-Service-Files Investigation
+- **Status:** Open
+- **Aufwand:** M
+- **Added:** 2026-05-13
+- **Source:** TrustScout-Diagnose 13.05.26 (PR #22)
+- **Details:** Diagnose ergab: `agents/trustscout.py` (514 Zeilen) hat 2 systemd-Service-Files (`moltrust-trustscout.service` heartbeat, `moltrust-trustscout-daily.service` daily). Nicht orphaned wie initial vermutet. Schreibt parallel mit `agents/moltguard.py` post-edu/post-deep das `data/trustscout_state.json`. Multi-Writer-Pattern für `last_post_time` Field. Funktional läuft alles (Posts kommen auf Moltbook an, verifiziert via Telegram-Stats), aber Architektur ist unklar: warum 2 Code-Pfade parallel? Soll konsolidiert werden? Reines Investigation-Item, kein akuter Fix nötig.
+
+### 5 stale lokale Branches Cleanup
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-13
+- **Source:** Side-Beobachtung 13.05.26 (PR #22 prep)
+- **Details:** Nach git branch -vv mit gone upstream: chore/smithery-v2-workflow-doc (PR#19), chore/workflow-doc (PR#20), chore/working-tree-rescue-2026-05-12 (PR#18), chore/backlog-init (PR#21), feature/caep-registry-endpoints (orphaned probe-sprint base). Cleanup via `git branch -d <name>` für jeweils.
+
 ---
 
 ## Deferred (Decision Required Before Activation)
@@ -270,5 +263,6 @@
 
 ## Changelog
 
+- **2026-05-13 — V1.2**: Drei resolved-by-action Items entfernt: TrustScout reanimate/decommission (resolved durch Diagnose 13.05. → PR #22 permanently removed Watchdog-Eintrag), TrustScout-Silencing-Commit (resolved durch PR #21 + #22), Memory #25 TrustScout-crontab-Lüge (resolved durch Memory-Replace 12.05.). Zwei neue Low-Items hinzu: trustscout.py + 2 systemd-Service-Files Investigation (offene Architektur-Frage, kein akuter Fix nötig), 5 stale lokale Branches Cleanup.
 - **2026-05-13 — V1.1**: BACKLOG-Audit gegen Server-State durchgeführt (4 von 30 Items stale: stash-Claims falsch, herald_v3.py uuid-pattern nicht im File, settlement.py isinstance-Pattern anders als vermutet, KNOWN_FAILURES-Tests nicht im File). CAEP v2 umformuliert per Lars-Korrektur (nicht blocked auf Harald, sondern neuer Sprint mit Cross-LLM-Review). Telegram-Token-Item präzisiert (Rotation done by Lars server-side, verbleibendes Issue ist httpx-Log-Leak). Stash@{0} Post-Triage Review als neues Medium-Item hinzu.
 - **2026-05-13 — V1**: Initial. Konsolidiert offene Items aus 12.05.26 (Auto-Probe-Drama) + 13.05.26 (WORKFLOW.md V1-Merge).
