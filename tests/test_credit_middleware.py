@@ -1,11 +1,11 @@
-"""Group A tests for credit_middleware after schema-alignment fix (V2 spec).
+"""Group A + B tests for credit_middleware after schema-alignment fix (V2.1 spec).
 
 Endpoint used throughout: GET /identity/verify/{did}, cost=1.
 
-Test 1 (smoke) — already green; reads agents row, returns 200, middleware deducts.
-
-Tests 2-6 cover the surrounding behavior matrix per the V2 spec test plan.
+Group A (Tests 1-6) — single-request behavior matrix.
+Group B (Test 7) — concurrent-requests race-condition invariant.
 """
+import asyncio
 import pytest
 
 
@@ -279,3 +279,95 @@ async def test_error_body_no_balance_disclosure(async_client, credit_test_agent)
     assert body.get("error") == "insufficient_credits", (
         f"expected error='insufficient_credits', got {body!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Group B — Test 7 — concurrency invariant: N parallel requests respect balance
+# ---------------------------------------------------------------------------
+async def test_concurrent_deducts_respect_balance(async_client, credit_test_agent):
+    """Race-Test: balance=3, N=10 parallele GETs an /identity/verify/{did}.
+
+    Alle 10 Requests nutzen dieselbe DID + denselben api_key. Alle passieren den
+    advisory Pre-Check (zum Zeitpunkt des Pre-Checks ist balance noch > 0). Im
+    Deduct-Block kaempft das atomare UPDATE ... WHERE balance >= cost: nur 3
+    koennen gewinnen, weil nur 3 Credits da sind.
+
+    Invariante (muss gelten, egal wie das Scheduling laeuft):
+    - genau 3 Requests → HTTP 200, genau 7 → HTTP 402
+    - credit_balances.balance == 0 am Ende
+    - genau 3 credit_transactions api_call-Rows fuer die DID
+    - die balance_after-Werte der 3 Rows sind exakt {2, 1, 0} — jeder Wert genau
+      einmal, keine Dublette (eine Dublette wuerde eine nicht-atomare Race im
+      UPDATE beweisen)
+    - Summe der amount ueber die 3 Rows == 3
+
+    Warum N=10 gegen balance=3 statt N=2 gegen balance=1: ein N=2-Test trifft die
+    Race nur bei perfektem Timing — gruen koennte auch zufaellige Serialisierung
+    bedeuten. N deutlich groesser als balance erzwingt echte Konkurrenz und macht
+    die Invariante zum harten Beweis.
+    """
+    from app.main import db_pool
+
+    did, api_key = await credit_test_agent(balance=3)
+
+    coros = [
+        async_client.get(
+            f"/identity/verify/{did}",
+            headers={"X-API-Key": api_key},
+        )
+        for _ in range(10)
+    ]
+    responses = await asyncio.gather(*coros)
+
+    status_codes = sorted(r.status_code for r in responses)
+    # Strict invariant: only 200 and 402 codes are valid outcomes here.
+    assert set(status_codes) <= {200, 402}, (
+        f"unexpected status codes (no 500s allowed): {status_codes}"
+    )
+    assert status_codes.count(200) == 3, (
+        f"expected exactly 3 successes, got {status_codes.count(200)}; "
+        f"all codes: {status_codes}"
+    )
+    assert status_codes.count(402) == 7, (
+        f"expected exactly 7 refusals, got {status_codes.count(402)}; "
+        f"all codes: {status_codes}"
+    )
+
+    # Every 402 must use the harmonized error contract; no balance disclosure.
+    for r in responses:
+        if r.status_code == 402:
+            body = r.json()
+            assert body.get("error") == "insufficient_credits", (
+                f"402 body has wrong error: {body!r}"
+            )
+            assert "balance" not in body, (
+                f"402 body discloses balance: {body!r}"
+            )
+
+    async with db_pool.acquire() as conn:
+        final_balance = await conn.fetchval(
+            "SELECT balance FROM credit_balances WHERE did = $1", did
+        )
+        assert final_balance == 0, f"expected final balance 0, got {final_balance}"
+
+        rows = await conn.fetch(
+            "SELECT amount, balance_after FROM credit_transactions "
+            "WHERE from_did = $1 AND tx_type = 'api_call' "
+            "ORDER BY balance_after DESC",
+            did,
+        )
+        assert len(rows) == 3, (
+            f"expected exactly 3 api_call ledger rows, got {len(rows)}"
+        )
+
+        # The three balance_after values must be exactly {2, 1, 0} — every value
+        # once, no duplicates. A duplicate would prove a non-atomic UPDATE race.
+        balance_afters = sorted(r["balance_after"] for r in rows)
+        assert balance_afters == [0, 1, 2], (
+            f"expected balance_after set [0,1,2], got {balance_afters} — "
+            f"duplicates indicate the atomic UPDATE failed to serialize concurrent "
+            f"deducts (WHERE balance >= cost did not prevent over-spend)"
+        )
+
+        total_amount = sum(r["amount"] for r in rows)
+        assert total_amount == 3, f"expected sum(amount)=3, got {total_amount}"
