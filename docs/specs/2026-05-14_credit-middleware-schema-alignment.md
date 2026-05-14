@@ -1,10 +1,13 @@
-# Spec: Credit-Middleware Schema-Alignment Fix — V2
+# Spec: Credit-Middleware Schema-Alignment Fix — V2.1
 
 **Datum:** 2026-05-14
 **Branch:** `fix/credit-middleware-schema-alignment`
 **Autor:** Lars (Decision) + Claude (Spec) + Claude Code (Implementation)
-**Status:** V2 — GPT-5 Cross-Review eingearbeitet, Server-Fakten verifiziert
+**Status:** V2.1 — Pre-Check-Format-Harmonisierung nach Test-Befund ergänzt
 **WORKFLOW-Konformität:** Sektion 1.3 (9-Section-Spec), Sektion 2.3 (Cross-Review durchlaufen)
+
+**Changelog V2 → V2.1:**
+- Section 5: Pre-Check-402-Format explizit aufgenommen. Die Gruppe-A-Tests (`test_deduct_insufficient_balance`, `test_error_body_no_balance_disclosure`) deckten auf, dass der Pre-Check (app/main.py ~428) ein abweichendes 402-Format zurückgab (`"Insufficient credits"` mit Balance-Disclosure) statt des in Section 5 definierten `{error, detail}`-Schemas. V2 sagte "Pre-Check bleibt" — gemeint war die Funktion, nicht das Format. V2.1 stellt klar: beide 402-Pfade nutzen dasselbe Schema. Code-Fix: Commit `fdab618`.
 
 **Changelog V1 → V2:**
 - Free-Ride-Race adressiert: HTTP-Status-Mutation bei UPDATE=0 (GPT-5 CRITICAL A)
@@ -88,6 +91,8 @@ JSON-Error-Body-Schema (konsistent für 402 und 500):
 {"error": "<kurzer code>", "detail": "<menschenlesbar>"}
 ```
 Für 402: `error: "insufficient_credits"`. Der Body nennt **nicht** den exakten Balance-Stand (GPT-5 LOW C — bewusste Entscheidung: keine Balance-Disclosure im Error-Body, der Caller kann seinen Stand über den dedizierten Balance-Endpoint abfragen).
+
+**Pre-Check-402-Format (V2.1):** Es gibt zwei Stellen die ein 402 zurückgeben können — den advisory Pre-Check (vor `call_next`, filtert offensichtlich zahlungsunfähige Requests früh) und den Deduct-Block (nach `call_next`, bei `UPDATE=0`). **Beide MÜSSEN dasselbe Schema liefern:** `{"error": "insufficient_credits", "detail": "..."}`, ohne Balance-Disclosure. Der Pre-Check gab ursprünglich ein abweichendes Format zurück (`"Insufficient credits"` mit `balance`/`required`/`pricing_url`) — das wurde harmonisiert (Commit `fdab618`). Ein Client darf nicht je nach Code-Pfad ein anderes 402-Format bekommen.
 
 **Hinweis zur Free-Ride-Race:** Mit der 402-Mutation bei `UPDATE=0` ist das Race-Fenster für den *Ledger* vollständig geschlossen (atomares `UPDATE ... WHERE balance >= cost RETURNING balance`) und für den *HTTP-Status* ebenfalls — der zweite konkurrierende Request erhält 402 statt 200. Was nicht verhindert wird: der Handler des zweiten Requests **lief bereits**, bevor die Mutation greift. Da die durch `credit_middleware` geschützten Endpoints lesende/berechnende Calls sind (Trust-Score etc.), ist ein einzelner gelaufener-aber-mit-402-quittierter Handler-Durchlauf im exakten Race-Fenster kein Schaden — der Client bekommt 402, hat also kein verwertbares Ergebnis. Die vollständige Vermeidung (Handler gar nicht erst aufrufen) ist die Inversion aus Section 2 / Section 9.2.
 
