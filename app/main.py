@@ -428,10 +428,8 @@ async def credit_middleware(request: Request, call_next):
         return JSONResponse(
             status_code=402,
             content={
-                "error": "Insufficient credits",
-                "balance": balance,
-                "required": cost,
-                "pricing_url": "https://api.moltrust.ch/credits/pricing",
+                "error": "insufficient_credits",
+                "detail": "Not enough credits for this call.",
             },
         )
 
