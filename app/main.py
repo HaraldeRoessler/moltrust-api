@@ -438,28 +438,60 @@ async def credit_middleware(request: Request, call_next):
     # Execute the actual request
     response = await call_next(request)
 
-    # MEDIUM-2: Atomic deduct — single UPDATE with balance check prevents race conditions
+    # MEDIUM-2: Atomic deduct — single UPDATE with balance check prevents race conditions.
+    # Schema-aligned per docs/specs/2026-05-14_credit-middleware-schema-alignment.md V2:
+    # - WHERE did = $2 (not agent_did)
+    # - INSERT into (from_did, to_did, amount, tx_type, reference, description, balance_after)
+    # - amount is positive (CHECK amount > 0); direction encoded in tx_type='api_call'
+    # - balance_after via UPDATE...RETURNING (race-free, no second SELECT)
+    # - Free-Ride-Race fix: 402 on UPDATE=0 instead of silent 2xx
+    # - DB-error path: 500 instead of silent 2xx
     if response.status_code < 400:
+        deduct_failed = False
         try:
             async with db_pool.acquire() as conn:
                 async with conn.transaction():
                     from app.credits import resolve_endpoint_key
                     ref = resolve_endpoint_key(method, path)
-                    rows_affected = await conn.execute(
-                        "UPDATE credit_balances SET balance = balance - $1 "
-                        "WHERE agent_did = $2 AND balance >= $1",
+                    # Atomarer Deduct: WHERE balance >= cost schliesst Race + Insufficient
+                    # in einem Statement. RETURNING liefert balance_after race-free.
+                    new_balance = await conn.fetchval(
+                        "UPDATE credit_balances "
+                        "SET balance = balance - $1, updated_at = NOW() "
+                        "WHERE did = $2 AND balance >= $1 "
+                        "RETURNING balance",
                         cost, caller_did,
                     )
-                    if rows_affected == "UPDATE 0":
-                        logger.warning("Atomic credit deduct failed (race) for %s", caller_did)
+                    if new_balance is None:
+                        # 0 Zeilen: Balance zu niedrig, DID unbekannt, oder Race-Fenster.
+                        # Kein Ledger-Eintrag. Transaktion ist effektiv leer -> sauberer Abschluss.
+                        deduct_failed = True
+                        logger.warning(
+                            "Credit deduct: insufficient/race for %s (cost=%s)",
+                            caller_did, cost,
+                        )
                     else:
                         await conn.execute(
-                            "INSERT INTO credit_transactions (agent_did, amount, reference, description, created_at) "
-                            "VALUES ($1, $2, $3, $4, NOW())",
-                            caller_did, -cost, ref, f"API call: {ref}",
+                            "INSERT INTO credit_transactions "
+                            "(from_did, to_did, amount, tx_type, reference, "
+                            "description, balance_after) "
+                            "VALUES ($1, NULL, $2, 'api_call', $3, $4, $5)",
+                            caller_did, cost, ref, f"API call: {ref}", new_balance,
                         )
         except Exception as e:
-            logger.error("Credit deduction failed for %s: %s", caller_did, e)
+            # Unerwarteter DB-Fehler: NIEMALS stiller 2xx-Erfolg.
+            logger.error("Credit deduction DB error for %s: %s", caller_did, e)
+            return JSONResponse(
+                status_code=500,
+                content={"error": "credit_processing_error",
+                         "detail": "Credit deduction failed unexpectedly."},
+            )
+        if deduct_failed:
+            return JSONResponse(
+                status_code=402,
+                content={"error": "insufficient_credits",
+                         "detail": "Not enough credits for this call."},
+            )
 
     return response
 
