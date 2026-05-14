@@ -32,6 +32,9 @@ build/
 # DB
 *.sql
 *.sqlite
+!init_db.sql
+!migrations/*.sql
+!app/migrations/*.sql
 backups/
 
 # Logs
