@@ -38,3 +38,94 @@ async def test_db():
             "DELETE FROM caep_events WHERE did LIKE 'did:moltrust:test_%'"
         )
         await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Credit-middleware test infrastructure
+# ---------------------------------------------------------------------------
+# Test-DID convention: did:moltrust:<16hex> (29 chars, matches DID_PATTERN
+#   `^did:moltrust:(?:ext_)?[a-f0-9]{16}$` so validate_did() accepts test DIDs).
+# Marker for analytics filtering lives in agents.display_name (prefix 'tc-')
+# and agents.platform='test'. Per-test rows in agents + credit_balances + api_keys
+# are cleaned up via the fixture's `created` list (not by DID-prefix pattern).
+# credit_transactions is append-only by trigger — test rows are LEFT in place;
+# they can be filtered out of analytics by joining agents on from_did and
+# filtering display_name LIKE 'tc-%' or platform = 'test'.
+
+
+@pytest_asyncio.fixture
+async def app_with_lifespan():
+    """Import the FastAPI app and trigger startup so db_pool is initialized.
+
+    The on_event('startup') hook in app.main allocates the global db_pool;
+    httpx.AsyncClient + ASGITransport does NOT trigger lifespan automatically,
+    so we run the registered handlers manually.
+    """
+    from app.main import app
+    for handler in getattr(app.router, "on_startup", []):
+        await handler()
+    yield app
+    # Note: on_shutdown handlers intentionally NOT run — process exit handles
+    # pool cleanup; running them now would close the pool before later fixtures.
+
+
+@pytest_asyncio.fixture
+async def async_client(app_with_lifespan):
+    """httpx.AsyncClient over ASGITransport against the live app."""
+    from httpx import AsyncClient, ASGITransport
+    transport = ASGITransport(app=app_with_lifespan)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+
+@pytest_asyncio.fixture
+async def credit_test_agent(app_with_lifespan):
+    """Factory: creates a test agent with starting balance, returns (did, api_key).
+
+    Inserts into agents, credit_balances, api_keys + adds the test key to the
+    in-memory API_KEYS env-set so verify_api_key() accepts it.
+
+    Cleanup (FK order): api_keys → credit_balances → agents. credit_transactions
+    rows from middleware-driven deducts are intentionally NOT cleaned (append-only
+    trigger). Marker for downstream analytics filtering: agents.display_name LIKE
+    'tc-%' and agents.platform = 'test' — join on from_did to find test ledger rows.
+    """
+    import uuid as _uuid
+    from app.main import db_pool, API_KEYS
+
+    created: list[tuple[str, str]] = []
+
+    async def _make(balance: int = 1000):
+        did = f"did:moltrust:{_uuid.uuid4().hex[:16]}"
+        api_key = f"mt_tc_{_uuid.uuid4().hex}"
+        display_name = f"tc-{did[-8:]}"
+        async with db_pool.acquire() as conn:
+            # Wrap all three INSERTs in one transaction so a failure in any
+            # of them rolls back the others — no half-created test agents.
+            # The created.append() below only runs if the whole tx commits.
+            async with conn.transaction():
+                await conn.execute(
+                    "INSERT INTO agents (did, display_name, platform, agent_type) "
+                    "VALUES ($1, $2, 'test', 'external')",
+                    did, display_name,
+                )
+                await conn.execute(
+                    "INSERT INTO credit_balances (did, balance) VALUES ($1, $2)",
+                    did, balance,
+                )
+                await conn.execute(
+                    "INSERT INTO api_keys (key, email, owner_did) VALUES ($1, $2, $3)",
+                    api_key, f"test+{did[-8:]}@test.local", did,
+                )
+        API_KEYS.add(api_key)
+        created.append((did, api_key))
+        return did, api_key
+
+    yield _make
+
+    async with db_pool.acquire() as conn:
+        for did, api_key in created:
+            await conn.execute("DELETE FROM api_keys WHERE owner_did = $1", did)
+            await conn.execute("DELETE FROM credit_balances WHERE did = $1", did)
+            await conn.execute("DELETE FROM agents WHERE did = $1", did)
+            API_KEYS.discard(api_key)
