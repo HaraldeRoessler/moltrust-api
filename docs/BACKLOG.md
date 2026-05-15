@@ -1,6 +1,6 @@
 # BACKLOG.md — MolTrust Open Items
 
-**Status:** V1.3, lebendiges Dokument
+**Status:** V1.4, lebendiges Dokument
 **Letzte Aktualisierung:** 2026-05-15
 **Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol)
 **Definiert durch:** WORKFLOW.md Sektion 1.7
@@ -20,6 +20,13 @@
 ---
 
 ## High
+
+### AAE ins Credential einbauen (Phase-1-Analyse §8 Punkt 1)
+- **Status:** Open
+- **Aufwand:** L
+- **Added:** 2026-05-15
+- **Source:** moltrust-web Phase-1-Analyse v4 (UNC-07 Lars-Entscheidung), API-Sprint-Übergabe §8
+- **Details:** `POST /identity/register` liefert aktuell ein vollständiges signiertes `AgentTrustCredential` **ohne** AAE-Envelope. AAE läuft separat über `POST /delegation/configure` und ist in `agent-card.json` als eigene Extension deklariert. Die Developer-Seite behauptet aber "Every MolTrust credential embeds an Agent Authorization Envelope" — im Ist-Zustand eine Falschaussage. Lars-Entscheidung: API erweitern, damit das Credential die AAE tatsächlich trägt. Voller WORKFLOW-Pfad (Spec mit 9 Sections, Cross-Review, Tests, PR). **Sequenzierung mit Credit-Middleware-Idempotency koordinieren** — beide ändern Schema, beide berühren `/identity/register`-Pfad, sollten nicht parallel laufen. moltrust-web kann die "embedded"-Darstellung erst nach Merge auf "embedded" heben; bis dahin entschärft PR1 die Falschaussage zu "separater delegation/configure-Schritt".
 
 ### Credit-Middleware Idempotency-Mechanismus
 - **Status:** Open
@@ -64,6 +71,34 @@
 ---
 
 ## Medium
+
+### API-Versionierung — Single-Source + v1-Contract klären (Phase-1-Analyse §8 Punkt 5)
+- **Status:** Open
+- **Aufwand:** M
+- **Added:** 2026-05-15
+- **Source:** moltrust-web Phase-1-Analyse v4 OD-8, plus Versionierungs-Audit 2026-05-15 (`~/moltstack/audits/2026-05-15_api-versioning.md`)
+- **Details:** Der Audit hat drei zusammenhängende Probleme aufgedeckt: (a) **Drei-Stellen-Duplikation ohne Single-Source** — `FastAPI(version="2.4")` in `app/main.py:50`, zusätzlich "2.4" als Literal in `:1519` (`/health`-Body) und `:5855` (zweiter Handler-Body). Kein zentraler Versions-String in `pyproject.toml`/`setup.cfg`/`app/__init__.py`. Ein Bump heute muss drei Stellen einzeln anfassen. (b) **Rückwärts-Dekrement 2.6 → 2.4** in der Repo-Historie — Initial-Commit `6c6a892` (2026-03-10) setzte `version="2.6"`, HEAD ist "2.4". Diagnostisches Signal: irgendwann hat jemand den Wert manuell editiert ohne sauberen Sprint-Pfad. (c) **Null versionierte Pfade** — 0 von 136 OpenAPI-paths haben `/v1/`, `/v2/`, `/api/v*`. Konvention ist domänen-präfixiert (`/identity/`, `/credits/`), nicht versions-präfixiert. Die OAS-`info.version` ist damit die einzige öffentliche Versions-Aussage des Systems — und sie ist unzuverlässig. Fix: Single-Source-of-Truth für die Versionsangabe (eine Konstante, z.B. `app.version.API_VERSION`, drei Stellen lesen sie), v1-Contract-Deklaration ("MolTrust API v2.4" im OAS vs. öffentliche v1-Aussage synchronisieren), Versionierungs-Schema (Breaking Changes über `/v2` oder Version-Header), Deprecation-Policy (6-Monats-Fenster, RFC 8594 `Deprecation`/`Sunset`-Header).
+
+### Trust-Score-Reads Rate-Limiting (Phase-1-Analyse §8 Punkt 2)
+- **Status:** Open
+- **Aufwand:** M
+- **Added:** 2026-05-15
+- **Source:** moltrust-web Phase-1-Analyse v4 (OD-7 / V-9 partial), API-Sprint-Übergabe §8
+- **Details:** Handler `/skill/trust-score/{did:path}` ist un-rate-limited und konstruktiv mit slowapi nicht nachrüstbar — der Handler hat keinen `request: Request`-Parameter. Signatur-Refactor nötig: `request: Request` als Parameter aufnehmen, slowapi-Decorator anwenden (Vorschlag: `60/minute/IP` analog zu anderen Read-Endpoints). Strukturarbeit, kein Config-Fix.
+
+### CAEP als Extension in agent-card.json deklarieren (Phase-1-Analyse §8 Punkt 3)
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-15
+- **Source:** moltrust-web Phase-1-Analyse v4 (UNC-11 / V-7), API-Sprint-Übergabe §8
+- **Details:** CAEP-Profil ist live (`@moltrust/agent-firewall@1.0.0`, PROFILE.md sauber, 4 Endpoints live), aber **nicht** als sechste Extension in `agent-card.json` deklariert. Aktuell dort nur fünf: trust-score, aae, erc8004, x402-payment, discovery-surfaces. CAEP-Extension-Eintrag ergänzen mit korrektem Schema-URI und Endpoint-Liste. Reine Doku-Auslieferungs-Asymmetrie, kein Funktions-Bug. Beim Gelegenheits-Cleanup auch den Doku-Drift in `agent-firewall` PROFILE.md angleichen: nennt CAEP-Default-Limit 100, Server-Code nutzt 50 — Server-Wert übernehmen, PROFILE.md korrigieren.
+
+### .well-known-Mirror-Generierung + Deprecation-Header (Phase-1-Analyse §8 Punkt 4)
+- **Status:** Open
+- **Aufwand:** M
+- **Added:** 2026-05-15
+- **Source:** moltrust-web Phase-1-Analyse v4 (OD-8 / INC-08), API-Sprint-Übergabe §8
+- **Details:** `agent-card.json` ist aktuell identisch unter `api.moltrust.ch/.well-known/` und `moltrust.ch/.well-known/` ausgeliefert, ohne kanonische Quelle. Entscheidung (OD-8): `api.moltrust.ch/.well-known/...` = kanonisch, `moltrust.ch/.well-known/...` = generierter Mirror. Mirror-Generierungs-Pipeline aufsetzen (cron, post-merge-hook, oder build-time). Plus RFC 8594 `Deprecation`/`Sunset`-Header für deprecated Endpoints implementieren. Hängt nicht von "API-Versionierung Single-Source" ab, aber thematisch verwandt — sinnvoll im selben Sprint oder direkt danach.
 
 ### Credit-Middleware process-wide-Scope + Inversion debit-vor-call_next
 - **Status:** Open
@@ -350,6 +385,11 @@
 
 ## Changelog
 
+- **2026-05-15 — V1.4**: API-Sprint-Übergabe aus moltrust-web Phase-1-Analyse §8 als verfolgbare Items aufgenommen, ausgelöst durch den Versionierungs-Audit am 2026-05-15 (~/moltstack/audits/2026-05-15_api-versioning.md) und die Conversion-Chat-Nachfrage zur §8-Kommunikation.
+  - **Neu High (1):** AAE ins Credential einbauen (Phase-1 UNC-07 + Lars-Entscheidung) — koordinieren mit Credit-Middleware-Idempotency-Sprint (beide Schema-Change auf /identity/register, nicht parallel).
+  - **Neu Medium (4):** API-Versionierung Single-Source + v1-Contract klären (Audit-Befunde: 3 Stellen ohne zentrale Quelle, Rückwärts-Dekrement 2.6→2.4, 0/136 Pfade versioniert), Trust-Score-Reads Rate-Limiting (Handler-Signatur-Refactor), CAEP als Extension in agent-card.json deklarieren, .well-known-Mirror-Generierung + Deprecation-Header.
+  - **Sequenzierungs-Hinweis:** AAE-Sprint und Credit-Idempotency-Sprint berühren beide /identity/register — Reihenfolge ist Lars-Entscheidung, aber nicht parallel laufen lassen.
+  - moltrust-web kann die "embedded AAE"-Darstellung erst nach Merge des AAE-Sprints zeigen; bis dahin entschärft PR1 die Falschaussage zu "separater delegation/configure-Schritt".
 - **2026-05-15 — V1.3**: Credit-Middleware-Sprint 14./15.05. abgeschlossen (PR #27 merged), Out-of-Scope-Items + Health-Check-Findings nachgezogen.
   - **Resolved (raus):** `agents/traffic_monitor.py File-vs-DB Architektur` — heutige Entscheidung file-based v2 wiederhergestellt + cron wieder funktional, Item geschlossen.
   - **Neu High (2):** Credit-Middleware Idempotency-Mechanismus (GPT-5 Cross-Review CRITICAL F, eigenes Feature mit Schema-Change), cron.service OOM-kill investigieren (Health-Check 14.05. 02:01 UTC).
