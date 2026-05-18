@@ -59,7 +59,7 @@ Alle [LARS]-Punkte entschieden. Basis @moltrust/aae 1.1.0 + Console-Empfehlungen
 
 ```ts
 type Purpose         = "commerce" | "data_read" | "data_write" | "communication" | "compute" | "delegation"; // v1, erweiterbar
-type Obligation      = "log_all_actions" | "tool_allowlist" | "notify_on_step_up" | "human_in_loop";          // v1; "tool_allowlist": inert v1 (s. NORMATIV)
+type Obligation      = "log_all_actions" | "tool_allowlist" | "notify_on_step_up" | "human_in_loop";          // v1; "tool_allowlist": inert v1, kein Inhaltsmodell — nicht für Enforcement (C2; s. NORMATIV)
 type Currency        = "USDC" | "EUR" | "CHF" | "USD";
 type SigningAlgorithm = "Ed25519" | "ML-DSA-65";
 
@@ -93,7 +93,7 @@ interface Constraints {
   timeWindow: TimeWindow;
   limits: Limits;
   scope?: Scope;
-  obligations?: Obligation[];     // Flag-Set; human_in_loop nur Flag (Schwelle in limits.approvalThreshold); "tool_allowlist" inert v1 (s. NORMATIV)
+  obligations?: Obligation[];     // Flag-Set; human_in_loop nur Flag (Schwelle in limits.approvalThreshold); "tool_allowlist" inert v1, nicht für Enforcement (C2; s. NORMATIV)
 }
 interface OnChainAnchor { chain: string; block: number; txHash: string; }
 interface Validity {              // = A (einzige in sich konsistente Variante)
@@ -111,7 +111,7 @@ interface AAE { mandate: Mandate; constraints: Constraints; validity: Validity; 
 
 **NORMATIV — Nicht-Enforcement-Caveats (Teil des Schemas, nicht nur Appendix B):**
 - **`delegation` (Mandate.delegation / interface Delegation):** Struktur kanonisch; **Semantik NICHT durchsetzbar**, bis V1.4-1 D3 ein formales Attenuations-/Kompositionsmodell + Mapping zur Live-`agent_delegation_config` liefert. **Nicht für Enforcement-Entscheidungen verwenden.**
-- **`tool_allowlist` (Obligation):** **deklarativ/inert in v1; kein Inhaltsmodell;** nicht für Enforcement, bis ein Tool-Constraint-Modell entschieden ist.
+- **`tool_allowlist` (Obligation):** **deklarativ/inert in v1; kein Inhaltsmodell;** nicht für Enforcement, bis ein Tool-Constraint-Modell entschieden ist **(C2 — eigenes Follow-up-BACKLOG-Item, KEIN D1-Blocker; BACKLOG.md „AAE `tool_allowlist`-Inhaltsmodell (C2)").**
 - **B1–B3 bleiben normativ:** B1 Integer-minor-units + `currencyScale` + Overflow=reject; B2 UTC-`Z` + Clock-Drift-Toleranz (Toleranz-Wert = Folge-Entscheidung); B3 RFC 8785 (JCS).
 
 **KONSEQUENZ für V1.4-1 (hier im Brief festgehalten; BACKLOG separat):** C1 hebt **D3 zum kritischen Pfad**. **V1.4-1 darf NICHT in Produktion, bevor D3 ein formales Delegations-Enforcement-Modell (Attenuation/Komposition + Mapping zur Live-`agent_delegation_config`) geliefert hat.** Drei-Reviewer-Konsens: Auslassen = **Privilege-Escalation-Risiko**. C2 (`tool_allowlist`-Inhaltsmodell) = **eigenes Follow-up-Item, KEIN D1-Blocker**.
