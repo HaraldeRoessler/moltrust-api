@@ -337,7 +337,12 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
         # 2. Synthesis via Claude
         print("\n🧠 Synthetisiere via Claude...")
         synthesis = await call_claude_synthesis(client, openai_result, gemini_result, perplexity_result, label)
-        print("   Synthesis : ✅")
+        synthesis_failed = (
+            not isinstance(synthesis, str)
+            or not synthesis.strip()
+            or synthesis.lstrip().startswith(("ERROR Synthesis", "ERROR:"))
+        )
+        print(f"   Synthesis : {'❌ FEHLGESCHLAGEN' if synthesis_failed else '✅'}")
 
         # 3. Output-File schreiben
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -398,6 +403,11 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
         print("📱 Telegram Alert gesendet\n")
 
     print(f"{'='*60}")
+    if synthesis_failed:
+        print("❌ Review FEHLGESCHLAGEN: Synthese-Schritt nicht erfolgreich.")
+        print(f"   Raw-Reviews + Fehlertext gespeichert: {output_path.name}")
+        print(f"{'='*60}\n")
+        sys.exit(2)
     print(f"✅ Review abgeschlossen: {output_path.name}")
     print(f"{'='*60}\n")
     return output_path
