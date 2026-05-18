@@ -21,6 +21,13 @@
 
 ## High
 
+### V1.4-1: D3 = kritischer Pfad — keine Produktion ohne formales Delegations-Enforcement-Modell
+- **Status:** Open
+- **Aufwand:** L
+- **Added:** 2026-05-18
+- **Source:** AAE-D1-Kanonisierung §2.3-Security-Cross-Review (PR #41, Verdikt GRUNDLEGEND ÜBERDENKEN, Punkt C1)
+- **Details:** Das D1-AAE-Schema (PR #41) ist als **strukturelle** Baseline freigegeben (Lars, Option a), aber die `delegation`-**Semantik ist NICHT enforce-bar**. Drei-Reviewer-Konsens (GPT-4o + Gemini + Perplexity, security mode): das Verschieben der Reconciliation zwischen Schema-`Delegation` (`attenuationOnly`/`maxSubAgents`/`maxDepth`) und der Live-`agent_delegation_config` (`constraint_mode ∈ {inherit,restrict,none}`) auf V1.4-1 D3 ist ein **Privilege-Escalation-Risiko** (zwei konkurrierende Delegationsmodelle ohne formales Kompositions-/Attenuationsmodell). **Konsequenz: V1.4-1 darf NICHT in Produktion, bevor D3 ein formales Delegations-Enforcement-Modell (Attenuation/Komposition + Mapping zur Live-`agent_delegation_config`) geliefert hat.** D3 ist damit **kritischer Pfad** für V1.4-1. Quelle/Detail: PR #41 NORMATIV-Block + Appendix B.
+
 ### AAE ins Credential einbauen (Phase-1-Analyse §8 Punkt 1)
 - **Status:** Open
 - **Aufwand:** L
@@ -71,6 +78,13 @@
 ---
 
 ## Medium
+
+### AAE `tool_allowlist`-Inhaltsmodell (C2, Follow-up — KEIN D1-Blocker)
+- **Status:** Open
+- **Aufwand:** M
+- **Added:** 2026-05-18
+- **Source:** AAE-D1-Kanonisierung §2.3-Cross-Review (PR #41, Punkt C2)
+- **Details:** Das D1-Schema führt `tool_allowlist` als `Obligation`-Flag, aber **ohne Inhaltsmodell** (welche Tools konkret erlaubt sind). In v1 daher **deklarativ/inert** — DARF nicht für Enforcement herangezogen werden, bis ein Tool-Constraint-Inhaltsmodell entschieden ist. Reviewer-Optionen (nicht entschieden, **nicht erfunden**): `ToolConstraint[]` direkt im Schema vs. externer Referenz-Hash. **Ausdrücklich KEIN D1-Blocker** (Lars-Entscheidung) — eigenes Follow-up. Relevant erst, sobald `obligations` tatsächlich enforced werden.
 
 ### §9.2 global: Debit-vor-call_next für alle 12 paid Routes (sauberer Endzustand)
 - **Status:** Open
