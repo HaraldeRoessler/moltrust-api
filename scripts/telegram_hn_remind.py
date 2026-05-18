@@ -18,6 +18,10 @@ text = (
 
 r = requests.post(
     f'https://api.telegram.org/bot{token}/sendMessage',
-    json={'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'}
+    json={'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'},
+    timeout=15,
 )
-print(f'Status: {r.status_code}, Response: {r.text}')
+# Print only the status. Telegram error bodies can echo the request URL
+# (which contains the bot token in the path) — leaking the body to
+# stdout puts the token into log aggregators / CI scrollback.
+print(f'Status: {r.status_code}')

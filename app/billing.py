@@ -13,6 +13,7 @@ Env vars required (aus ~/.moltrust_secrets):
 """
 
 import os
+import secrets
 import logging
 import re
 from datetime import datetime, timezone
@@ -374,7 +375,7 @@ async def list_referrals(request: Request):
     """
     admin_key = request.headers.get("x-admin-key", "")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(401, "Admin key required")
 
     from app.main import db_pool

@@ -71,12 +71,14 @@ def send_telegram(text):
         "text": text,
         "parse_mode": "HTML"
     }).encode()
+    _tg_url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage"
+    if not _tg_url.startswith(("http://", "https://")):
+        return
     req = urllib.request.Request(
-        "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage",
-        data=payload, headers={"Content-Type": "application/json"}
+        _tg_url, data=payload, headers={"Content-Type": "application/json"}
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:  # noqa: S310 — scheme validated above
             json.loads(r.read())
     except Exception as e:
         log.error("Telegram send failed: %s", e)

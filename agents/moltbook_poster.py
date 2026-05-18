@@ -108,7 +108,7 @@ def generate_post(topic, previous_titles):
         log.error("No ANTHROPIC_API_KEY available")
         return None
 
-    submolt = random.choice(SUBMOLTS)
+    submolt = random.choice(SUBMOLTS)  # noqa: S311 — non-security content selection
     prev_list = "\n".join(f"- {t}" for t in previous_titles[-15:]) if previous_titles else "None yet"
 
     user_msg = (
@@ -260,7 +260,10 @@ def save_state(state):
 
 
 def post_hash(title):
-    return hashlib.md5(title.encode()).hexdigest()[:12]
+    # SHA-256 truncated to 12 hex chars. MD5 is broken (collision attacks);
+    # while this hash is non-security-critical (dedup only), avoiding MD5
+    # silences static-analysis noise and pre-empts future foot-guns.
+    return hashlib.sha256(title.encode()).hexdigest()[:12]
 
 
 # ── Lobster Math Solver ───────────────────────────────────────────────────────
@@ -525,7 +528,7 @@ def pick_post(state):
     previous_titles = state.get("posted_titles", [])
 
     # Pick a random topic seed
-    topic = random.choice(TOPIC_SEEDS)
+    topic = random.choice(TOPIC_SEEDS)  # noqa: S311 — non-security content selection
     log.info(f"Topic seed: {topic}")
 
     # Try Claude-generated post
@@ -543,7 +546,7 @@ def pick_post(state):
         state["posted_hashes"] = []
         available = FALLBACK_POOL
 
-    return random.choice(available)
+    return random.choice(available)  # noqa: S311 — non-security content selection
 
 
 def main():

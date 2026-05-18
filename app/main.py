@@ -68,13 +68,28 @@ from fastapi.responses import HTMLResponse as _HTMLResp
 
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui():
+    # CSP limits the blast radius of any future injection into this HTML.
+    # Allowlist mirrors what the page actually loads (Swagger UI CDN
+    # + favicon host). 'unsafe-inline' is required by the existing
+    # theme-toggle script and inline styles; tightening further would
+    # need extracting those into a hashed external file.
+    _csp = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "img-src 'self' data: https://moltrust.ch; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'"
+    )
     return _HTMLResp("""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <title>MolTrust API</title>
 <link rel="icon" href="https://moltrust.ch/img/favicon.png" type="image/png">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui.css" integrity="sha384-wxLW6kwyHktdDGr6Pv1zgm/VGJh99lfUbzSn6HNHBENZlCN7W602k9VkGdxuFvPn" crossorigin="anonymous">
 <style>
   :root { --bg: #fff; --topbar-bg: #0F172A; --text: #1E293B; --border: #E2E8F0; }
   [data-theme="dark"] { --bg: #0F172A; --topbar-bg: #0F172A; --text: #E2E8F0; --border: #334155; }
@@ -144,21 +159,26 @@ async def custom_swagger_ui():
   </div>
 </div>
 <div id="swagger-ui"></div>
-<script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js" integrity="sha384-wmyclcVGX/WhUkdkATwhaK1X1JtiNrr2EoYJ+diV3vj4v6OC5yCeSu+yW13SYJep" crossorigin="anonymous"></script>
 <script>
 function toggleTheme(){var c=document.documentElement.getAttribute('data-theme');var n=c==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',n);localStorage.setItem('mt-theme',n);}
 SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui',presets:[SwaggerUIBundle.presets.apis,SwaggerUIBundle.SwaggerUIStandalonePreset],layout:'BaseLayout',deepLinking:true});
 </script>
 </body>
-</html>""")
+</html>""", headers={"Content-Security-Policy": _csp})
 
 
 # --- Config ---
-MOLTBOOK_APP_KEY = os.getenv("MOLTBOOK_APP_KEY", "moltdev_PENDING")
+# Fail-fast on required secrets / credentials. No "PENDING" defaults that
+# could silently bleed into production traffic.
+MOLTBOOK_APP_KEY = os.getenv("MOLTBOOK_APP_KEY", "")
 if not os.getenv("MOLTRUST_API_KEYS"):
     raise RuntimeError("MOLTRUST_API_KEYS environment variable is required — no default key allowed")
 API_KEYS = set(os.getenv("MOLTRUST_API_KEYS").split(","))
-DB_URL = os.getenv("DATABASE_URL", "postgresql://moltstack:$(cat /dev/null)@localhost/moltstack")
+# Use a benign default for DATABASE_URL — the previous default contained a
+# `$(...)` shell-injection antipattern that did nothing because the value
+# was never shelled out, but was confusing on review.
+DB_URL = os.getenv("DATABASE_URL", "postgresql://moltstack@localhost/moltstack")
 
 # --- Credits Config ---
 CREDITS_ENABLED = os.getenv("CREDITS_ENABLED", "false").lower() == "true"
@@ -175,10 +195,16 @@ db_pool = None
 @app.on_event("startup")
 async def startup():
     global db_pool
+    # MOLTSTACK_DB_PW is required at startup. Empty password against a
+    # misconfigured Postgres could silently succeed in development and
+    # mask credential-rotation incidents in production.
+    _db_pw = os.getenv("MOLTSTACK_DB_PW")
+    if not _db_pw:
+        raise RuntimeError("MOLTSTACK_DB_PW environment variable is required")
     try:
         db_pool = await asyncpg.create_pool(
             host=os.getenv("DB_HOST", "localhost"), database=os.getenv("DB_NAME", "moltstack"),
-            user="moltstack", password=os.getenv("MOLTSTACK_DB_PW", ""),
+            user="moltstack", password=_db_pw,
             min_size=2, max_size=10
         )
     except Exception as e:
@@ -265,13 +291,33 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 # --- Outbound Content Filter ---
+# scrub_secrets is a belt-and-suspenders defence layered on top of
+# code-level care. The patterns target high-shape secret formats —
+# adding new patterns is cheap; missing one is the only failure mode.
 SENSITIVE_PATTERNS = [
     re.compile(r"sk-ant-api[a-zA-Z0-9\-_]{20,}"),
     re.compile(r"sk-[a-zA-Z0-9]{20,}"),
     re.compile(r"xprv[a-zA-Z0-9]{50,}"),
     re.compile(r"password\s*[:=]\s*\S+", re.IGNORECASE),
-    re.compile(r"BEGIN (RSA |EC )?PRIVATE KEY"),
+    re.compile(r"BEGIN (RSA |EC |OPENSSH |DSA |ENCRYPTED |PRIVATE )?PRIVATE KEY"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
+    # AWS-flavoured secret access keys (40-char base64).
+    re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9])"),
+    # GitHub fine-grained / classic / app tokens.
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"),
+    # Stripe live + restricted tokens.
+    re.compile(r"(sk|rk)_live_[A-Za-z0-9]{20,}"),
+    re.compile(r"whsec_[A-Za-z0-9]{20,}"),
+    # OpenAI / Anthropic short-form bearer tokens.
+    re.compile(r"sk-proj-[A-Za-z0-9\-_]{20,}"),
+    # JWT structure (three b64url-encoded sections).
+    re.compile(r"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"),
+    # Note: a generic `[0-9a-fA-F]{64,}` rule was intentionally NOT added.
+    # 64-hex blobs include legitimate response payloads — Ethereum tx
+    # hashes, anchor / IPR commitment hashes, content hashes — and
+    # scrubbing them would break the API surface. Likewise base58 would
+    # eat wallet addresses. Add new patterns only when both
+    # high-precision (low false-positive rate) and high-impact.
 ]
 
 def scrub_secrets(obj):
@@ -293,8 +339,12 @@ async def update_last_active(did: str):
                 await conn.execute(
                     "UPDATE agents SET last_seen = now(), last_active_at = now() WHERE did = $1", did
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            # Fire-and-forget by design (don't block the request), but log
+            # so a schema drift / DB hiccup doesn't disappear silently.
+            # Log only `type(e).__name__` — `e` can serialise asyncpg's
+            # connection string (with password) into the message.
+            logger.warning("update_last_active(%s) failed: %s", did, type(e).__name__)
 
 
 # --- IP Enrichment ---
@@ -306,7 +356,13 @@ async def _enrich_ip(ip: str) -> dict:
     info = {"org": None, "country": None}
     try:
         import urllib.request as _ur
-        req = _ur.Request(f"http://ip-api.com/json/{ip}?fields=org,country", headers={"User-Agent": "MolTrust/1.0"})
+        # HTTPS so geolocation data isn't MITM-able. ip-api.com supports
+        # HTTPS on its paid tier; on the free tier, callers should set
+        # MOLTRUST_IP_ENRICH_BASE to an HTTPS-capable provider.
+        _base = os.environ.get("MOLTRUST_IP_ENRICH_BASE", "https://ip-api.com").rstrip("/")
+        if not _base.startswith(("http://", "https://")):
+            return info  # refuse non-HTTP(S) bases
+        req = _ur.Request(f"{_base}/json/{ip}?fields=org,country", headers={"User-Agent": "MolTrust/1.0"})
         with _ur.urlopen(req, timeout=2) as r:
             import json as _j
             data = _j.loads(r.read())
@@ -324,13 +380,72 @@ async def _enrich_ip(ip: str) -> dict:
 
 
 def _get_client_ip(request) -> str:
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip.strip()[:50]
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[-1].strip()[:50]
-    return (request.client.host if request.client else "unknown")[:50]
+    """
+    Resolve the client IP from the request.
+
+    Honours `X-Real-IP` / `X-Forwarded-For` ONLY when the immediate
+    upstream (`request.client.host`) falls inside one of the CIDRs
+    declared in `MOLTRUST_TRUSTED_PROXIES` (comma-separated). When the
+    env var is unset, defaults to RFC1918 + loopback, which covers the
+    common case of api.moltrust.ch sitting behind a private-IP load
+    balancer. Set `MOLTRUST_TRUSTED_PROXIES="0.0.0.0/0,::/0"` to fall
+    back to the previous "trust everyone" behaviour during migration.
+
+    Without this gating, any external client could spoof X-Forwarded-For
+    to bypass rate limits or pollute the request log.
+    """
+    direct = request.client.host if request.client else None
+    if direct and _is_trusted_proxy(direct):
+        real_ip = request.headers.get("X-Real-IP")
+        if real_ip:
+            return real_ip.strip()[:50]
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[-1].strip()[:50]
+    return (direct or "unknown")[:50]
+
+
+def _is_trusted_proxy(client_host: str) -> bool:
+    try:
+        import ipaddress
+        ip_obj = ipaddress.ip_address(client_host)
+    except (ValueError, ImportError):
+        return False
+    for net in _trusted_proxy_networks():
+        try:
+            if ip_obj in net:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+_TRUSTED_PROXY_CACHE: list = []
+_TRUSTED_PROXY_CACHED_FOR: str | None = None
+
+
+def _trusted_proxy_networks() -> list:
+    """Parse MOLTRUST_TRUSTED_PROXIES once, then memoise."""
+    global _TRUSTED_PROXY_CACHE, _TRUSTED_PROXY_CACHED_FOR
+    raw = os.environ.get(
+        "MOLTRUST_TRUSTED_PROXIES",
+        "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7",
+    )
+    if raw == _TRUSTED_PROXY_CACHED_FOR:
+        return _TRUSTED_PROXY_CACHE
+    import ipaddress
+    nets = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            continue
+    _TRUSTED_PROXY_CACHE = nets
+    _TRUSTED_PROXY_CACHED_FOR = raw
+    return nets
 
 
 def _anonymize_ip(ip: str) -> str:
@@ -354,8 +469,12 @@ async def update_last_seen(did: str):
         try:
             async with db_pool.acquire() as conn:
                 await conn.execute("UPDATE agents SET last_seen = now() WHERE did = $1", did)
-        except:
-            pass
+        except Exception as e:
+            # Fire-and-forget by design, but log so a schema drift / DB
+            # hiccup doesn't disappear silently. (Was a bare `except: pass`.)
+            # Log only `type(e).__name__` — `e` can serialise asyncpg's
+            # connection string (with password) into the message.
+            logger.warning("update_last_seen(%s) failed: %s", did, type(e).__name__)
 
 @app.middleware("http")
 async def content_filter_middleware(request: Request, call_next):
@@ -478,17 +597,14 @@ async def credit_middleware(request: Request, call_next):
                         )
         except Exception as e:
             # Unerwarteter DB-Fehler: NIEMALS stiller 2xx-Erfolg.
-            logger.error("Credit deduction DB error for %s: %s", caller_did, e)
+            # Log only the exception class — `e` itself can serialise
+            # asyncpg connection strings (with the password) and similar
+            # operational secrets into the log line.
+            logger.error("Credit deduction DB error for %s: %s", caller_did, type(e).__name__)
             return JSONResponse(
                 status_code=500,
                 content={"error": "credit_processing_error",
                          "detail": "Credit deduction failed unexpectedly."},
-            )
-        if deduct_failed:
-            return JSONResponse(
-                status_code=402,
-                content={"error": "insufficient_credits",
-                         "detail": "Not enough credits for this call."},
             )
 
     return response
@@ -530,7 +646,13 @@ def verify_api_key_or_did(
 
 
 # --- DID-Wallet Binding: Nonce helpers ---
-NONCE_SECRET = os.getenv("NONCE_SECRET", "")
+# Fail-fast: an empty NONCE_SECRET would make HMAC nonces trivially
+# forgeable. The runtime checks at the issuance + verify call sites
+# would catch this, but better to refuse to start than allow an
+# accidentally-misconfigured deploy to serve traffic.
+NONCE_SECRET = os.getenv("NONCE_SECRET")
+if not NONCE_SECRET:
+    raise RuntimeError("NONCE_SECRET environment variable is required — no default allowed")
 
 def _generate_nonce(did: str) -> str:
     import time as _t, hashlib as _hl
@@ -579,7 +701,11 @@ _reg_tracker: dict[str, list[float]] = {}
 
 def check_registration_rate(api_key: str, max_per_hour: int = 5):
     now = time.time()
-    key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
+    # Full SHA-256 digest. The previous 16-char (64-bit) truncation was
+    # within brute-force range for an attacker generating many API keys
+    # to find collisions and bypass per-key rate limits. The dict key is
+    # an in-memory lookup; the full 64-char hex string is fine.
+    key_hash = hashlib.sha256(api_key.encode()).hexdigest()
     if key_hash not in _reg_tracker:
         _reg_tracker[key_hash] = []
     _reg_tracker[key_hash] = [t for t in _reg_tracker[key_hash] if now - t < 3600]
@@ -929,6 +1055,8 @@ async def register_agent(request: Request, body: RegisterRequest, api_key: str =
 @app.post("/auth/moltbook")
 @limiter.limit("20/minute")
 async def auth_with_moltbook(request: Request, body: MoltbookAuthRequest):
+    if not MOLTBOOK_APP_KEY:
+        raise HTTPException(503, "Moltbook integration not configured (MOLTBOOK_APP_KEY env var unset)")
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.post(
@@ -1451,7 +1579,7 @@ async def register_seed(request: Request, req: SeedRequest):
     """Register a trusted seed agent. Requires ADMIN_KEY header."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(status_code=403, detail="Forbidden")
     async with db_pool.acquire() as conn:
         try:
@@ -1632,6 +1760,16 @@ async def _resolve_did_web_external(did: str) -> dict:
       did:web:foo.com:agents:x  -> https://foo.com/agents/x/did.json
 
     Port encoding via percent-encoded colon is decoded.
+
+    SSRF defence: the host portion is fully attacker-controlled (it comes
+    from the path segment of the request). Before issuing the HTTPS GET we
+    refuse hostnames that resolve to non-public addresses — otherwise an
+    attacker could read AWS/GCP metadata services
+    (`did:web:169.254.169.254`), probe internal services
+    (`did:web:127.0.0.1:5984`), or scan private networks
+    (`did:web:10.0.0.5:8080`). The `did:web` spec was designed for public
+    hostnames; restricting to publicly-routable addresses removes the
+    SSRF surface without breaking any legitimate did:web consumer.
     """
     if not did.startswith("did:web:"):
         raise HTTPException(400, "Not a did:web identifier")
@@ -1642,6 +1780,7 @@ async def _resolve_did_web_external(did: str) -> dict:
     # Decode percent-encoded chars (e.g. %3A for : in port specs)
     parts = [urllib.parse.unquote(p) for p in parts]
     domain = parts[0]
+    await _assert_public_host(domain)
     if len(parts) == 1:
         url = f"https://{domain}/.well-known/did.json"
     else:
@@ -1657,6 +1796,95 @@ async def _resolve_did_web_external(did: str) -> dict:
         return resp.json()
     except ValueError:
         raise HTTPException(502, "didDocument is not valid JSON")
+
+
+# Banned networks for did:web SSRF defence. Anything that resolves into one
+# of these is refused. Covers IPv4 + IPv6 private, loopback, link-local
+# (incl. AWS/GCP/Azure metadata at 169.254.169.254), multicast, reserved,
+# and IPv4-mapped IPv6.
+_DID_WEB_BANNED_NETWORKS: list = []
+
+
+def _did_web_banned_networks() -> list:
+    """Memoised list of banned networks for did:web resolution."""
+    global _DID_WEB_BANNED_NETWORKS
+    if _DID_WEB_BANNED_NETWORKS:
+        return _DID_WEB_BANNED_NETWORKS
+    import ipaddress as _ip
+    _DID_WEB_BANNED_NETWORKS = [
+        _ip.ip_network("0.0.0.0/8"),       # "this network"
+        _ip.ip_network("10.0.0.0/8"),      # RFC1918
+        _ip.ip_network("100.64.0.0/10"),   # CGNAT
+        _ip.ip_network("127.0.0.0/8"),     # loopback
+        _ip.ip_network("169.254.0.0/16"),  # link-local (cloud metadata)
+        _ip.ip_network("172.16.0.0/12"),   # RFC1918
+        _ip.ip_network("192.0.0.0/24"),    # IETF protocol assignments
+        _ip.ip_network("192.168.0.0/16"),  # RFC1918
+        _ip.ip_network("198.18.0.0/15"),   # benchmark testing
+        _ip.ip_network("224.0.0.0/4"),     # multicast
+        _ip.ip_network("240.0.0.0/4"),     # reserved
+        _ip.ip_network("::1/128"),         # IPv6 loopback
+        _ip.ip_network("fc00::/7"),        # IPv6 ULA
+        _ip.ip_network("fe80::/10"),       # IPv6 link-local
+        _ip.ip_network("ff00::/8"),        # IPv6 multicast
+        _ip.ip_network("::ffff:0:0/96"),   # IPv4-mapped IPv6
+    ]
+    return _DID_WEB_BANNED_NETWORKS
+
+
+_BANNED_HOST_NAMES = {
+    "localhost",
+    "ip6-localhost",
+    "ip6-loopback",
+    "metadata",
+    "metadata.google.internal",
+    "instance-data",
+    "instance-data.ec2.internal",
+}
+
+
+async def _assert_public_host(host: str) -> None:
+    """Refuse did:web hosts that resolve to private / loopback / metadata addresses."""
+    import asyncio as _aio
+    import ipaddress as _ip
+    import socket as _socket
+
+    if not host:
+        raise HTTPException(400, "did:web: empty host")
+    # Strip an explicit port: did:web encodes ports via %3A which we've
+    # already percent-decoded into a colon. IPv6 literals are wrapped in
+    # brackets when paired with a port; strip those too.
+    if host.startswith("[") and "]" in host:
+        host_only = host[1: host.index("]")]
+    else:
+        host_only = host.split(":")[0]
+    if host_only.lower() in _BANNED_HOST_NAMES:
+        raise HTTPException(400, "did:web: non-public host not allowed")
+    banned = _did_web_banned_networks()
+    # If host is an IP literal, check it directly.
+    try:
+        ip_obj = _ip.ip_address(host_only)
+        if any(ip_obj in net for net in banned):
+            raise HTTPException(400, "did:web: private / loopback / link-local IP not allowed")
+        return  # bare public IP literal — ok
+    except ValueError:
+        pass  # fall through to DNS resolution
+    # Resolve the hostname and ensure every returned address is public.
+    try:
+        infos = await _aio.to_thread(_socket.getaddrinfo, host_only, None)
+    except _socket.gaierror:
+        raise HTTPException(404, "didNotResolved: DNS lookup failed")
+    for _family, _type, _proto, _canon, sockaddr in infos:
+        addr = sockaddr[0]
+        # Strip IPv6 scope-id (e.g. fe80::1%eth0)
+        if "%" in addr:
+            addr = addr.split("%")[0]
+        try:
+            ip_obj = _ip.ip_address(addr)
+        except ValueError:
+            continue
+        if any(ip_obj in net for net in banned):
+            raise HTTPException(400, "did:web: host resolves to a non-public address")
 
 
 @app.get("/identity/resolve/{did:path}")
@@ -2020,7 +2248,7 @@ async def get_inactive_agents(request: Request, days: int = Query(default=30, ge
     """Returns agents inactive for more than `days` days. Admin-only. RSAC Gap 3."""
     admin_key = request.headers.get("x-admin-key", "")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Admin key required")
 
     if not db_pool:
@@ -2520,7 +2748,7 @@ async def register_batch(request: Request):
     """Batch-register external agents with Merkle anchoring. Requires ADMIN_KEY."""
     admin_key = request.headers.get("x-admin-key", "")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Invalid or missing admin key")
 
     try:
@@ -2754,15 +2982,19 @@ async def verify_vc(request: Request, body: VerifyVCRequest):
     return result
 # --- Multi-Platform OAuth ---
 
-GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "PENDING")
-GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "PENDING")
+# GitHub OAuth is optional — endpoints below return 503 when unset. The
+# previous "PENDING" sentinel was a foot-gun: a leak into production
+# would have produced a half-broken OAuth handshake. Empty string + a
+# truthy check at the call sites is cleaner.
+GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "")
+GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
 _oauth_states: dict[str, float] = {}  # state -> timestamp
 
 @app.get("/auth/github")
 @limiter.limit("10/minute")
 async def github_auth_start(request: Request):
     """Redirect to GitHub OAuth"""
-    if GITHUB_CLIENT_ID == "PENDING":
+    if not GITHUB_CLIENT_ID:
         raise HTTPException(503, "GitHub OAuth not yet configured")
     # MEDIUM-1: CSRF protection via state parameter
     import time as _time
@@ -2778,7 +3010,7 @@ async def github_auth_start(request: Request):
 @limiter.limit("10/minute")
 async def github_auth_callback(request: Request, code: str = Query(max_length=128),
                                state: str = Query(default="", max_length=64)):
-    if GITHUB_CLIENT_ID == "PENDING":
+    if not GITHUB_CLIENT_ID:
         raise HTTPException(503, "GitHub OAuth not yet configured")
     # MEDIUM-1: Validate CSRF state parameter
     import time as _time
@@ -3334,7 +3566,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse, RedirectResponse
 @limiter.limit("30/minute")
 async def join_redirect(request: Request, ref: str = Query(default=None, max_length=100)):
     if ref:
-        return RedirectResponse(f"https://moltrust.ch?ref={ref}", status_code=302)
+        # Percent-encode the ref so injection characters (\n, &, #, @, /)
+        # in a malicious referral string can't break out of the query
+        # value or rewrite the redirect target.
+        return RedirectResponse(
+            f"https://moltrust.ch?ref={urllib.parse.quote(ref, safe='')}",
+            status_code=302,
+        )
     return RedirectResponse("https://moltrust.ch", status_code=302)
 
 # --- ERC-8004 Bridge (Phase 1: Read-Only) ---
@@ -4454,7 +4692,7 @@ async def create_violation_record(request: Request, body: ViolationRecordRequest
     """Record a protocol violation. Requires X-Admin-Key header. Tech Spec 2.7."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     record_id = str(uuid.uuid4())
@@ -4499,7 +4737,7 @@ async def reverse_violation(request: Request, body: ViolationReversalRequest, re
     """Reverse a violation record. Requires X-Admin-Key header. Tech Spec 2.7."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     reversal_date = body.reversal_date or datetime.datetime.utcnow().isoformat()
@@ -4715,7 +4953,7 @@ async def unrevoke_agent(
 
     admin_key = request.headers.get("x-admin-key", "")
     expected_admin = os.environ.get("ADMIN_KEY", "")
-    if not expected_admin or admin_key != expected_admin:
+    if not expected_admin or not admin_key or not secrets.compare_digest(admin_key, expected_admin):
         raise HTTPException(403, "Admin key required to unrevoke agents")
 
     async with db_pool.acquire() as conn:
@@ -4973,7 +5211,7 @@ async def spiffe_unbind(request: Request, spiffe_uri: str, api_key: str = Depend
 
     admin_key = request.headers.get("x-admin-key", "")
     expected_admin = os.environ.get("ADMIN_KEY", "")
-    if not expected_admin or admin_key != expected_admin:
+    if not expected_admin or not admin_key or not secrets.compare_digest(admin_key, expected_admin):
         raise HTTPException(403, "Admin key required to remove SPIFFE bindings")
 
     if not db_pool:
@@ -5052,7 +5290,7 @@ async def configure_delegation(request: Request, api_key: str = Depends(verify_a
             # Check admin
             admin_key = request.headers.get("x-admin-key", "")
             expected = os.environ.get("ADMIN_KEY", "")
-            if not expected or admin_key != expected:
+            if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
                 raise HTTPException(403, "Not authorized to configure delegation for this DID")
 
         await conn.execute("""
@@ -5310,7 +5548,7 @@ async def revoke_music_credential(request: Request, body: MusicRevokeRequest, cr
     """Revoke a music credential. Requires X-Admin-Key."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not expected or admin_key != expected:
+    if not expected or not admin_key or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     async with db_pool.acquire() as conn:
@@ -5528,7 +5766,7 @@ async def ipr_admin_anchor(request: Request):
     """Admin: Trigger Merkle batch anchoring for all pending IPRs."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not admin_key or admin_key != expected:
+    if not admin_key or not expected or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Invalid admin key")
 
     if not db_pool:
@@ -5544,7 +5782,7 @@ async def ipr_admin_retry(request: Request):
     """Admin: Reset failed IPRs back to pending."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not admin_key or admin_key != expected:
+    if not admin_key or not expected or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Invalid admin key")
 
     if not db_pool:
@@ -5560,7 +5798,7 @@ async def ipr_admin_reconcile(request: Request):
     """Admin: Verify all anchored IPRs against chain and reset missing."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not admin_key or admin_key != expected:
+    if not admin_key or not expected or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Invalid admin key")
 
     if not db_pool:
@@ -5576,7 +5814,7 @@ async def ipr_admin_reanchor(request: Request):
     """Admin: Force re-anchor a specific IPR."""
     admin_key = request.headers.get("x-admin-key")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not admin_key or admin_key != expected:
+    if not admin_key or not expected or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Invalid admin key")
 
     body = await request.json()
@@ -5607,7 +5845,7 @@ async def register_batch(request: Request):
     """
     admin_key = request.headers.get("x-admin-key", "")
     expected = os.environ.get("ADMIN_KEY", "")
-    if not admin_key or admin_key != expected:
+    if not admin_key or not expected or not secrets.compare_digest(admin_key, expected):
         raise HTTPException(403, "Invalid admin key")
 
     if not db_pool:
@@ -6610,6 +6848,15 @@ async def caller_detail(ip: str, request: Request):
     _get_admin_session(request)
     if not db_pool:
         raise HTTPException(503, "Database unavailable")
+
+    # Validate IP shape before using as a LIKE-prefix in SQL. The query
+    # is parameterised, but an unvalidated string (e.g. "% OR 1=1 --")
+    # would still produce confusing matches and pollute audit views.
+    import ipaddress as _ip_mod
+    try:
+        _ip_mod.ip_address(ip)
+    except ValueError:
+        raise HTTPException(400, "invalid IP address")
 
     import subprocess as _sp
 

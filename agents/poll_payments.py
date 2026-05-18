@@ -43,8 +43,10 @@ def fetch_recent_transfers() -> list:
     url = f"{BASESCAN_URL}?{params}"
 
     try:
+        if not url.startswith(("http://", "https://")):
+            raise ValueError(f"refusing non-HTTP(S) URL")
         req = Request(url, headers={"User-Agent": "MolTrust/1.0"})
-        with urlopen(req, timeout=15) as resp:
+        with urlopen(req, timeout=15) as resp:  # noqa: S310 — scheme validated above
             data = json.loads(resp.read())
     except Exception as e:
         log.error("Basescan API error: %s", e)

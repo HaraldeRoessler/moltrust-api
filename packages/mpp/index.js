@@ -42,8 +42,15 @@ async function getScore(wallet) {
 function extractWalletFromMPP(req) {
   const auth = req.headers['authorization'] || '';
 
-  // mppx uses "Payment" prefix
-  const match = auth.match(/^(?:Payment|MPP)\s+(.+)$/i);
+  // Hard cap on the Authorization header before regex match. Without this
+  // bound, the `\s+(.+)$` pattern below is polynomial-quadratic on
+  // pathological inputs (a long header full of whitespace). 8 KiB is
+  // generous for legitimate MPP envelopes.
+  if (auth.length > 8192) return null;
+
+  // mppx uses "Payment" prefix. Use bounded `\s{1,8}` and a non-greedy
+  // grouping to avoid the polynomial backtracking case altogether.
+  const match = auth.match(/^(?:Payment|MPP)\s{1,8}(\S.*)$/i);
   if (!match) return null;
 
   try {

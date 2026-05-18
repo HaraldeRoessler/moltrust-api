@@ -21,7 +21,7 @@ moltrust.ch/blog/sprint-march-2026.html
 
 #AIAgents #W3C #DID #Base #OpenSource"""
 
-resp = requests.post("https://api.twitter.com/2/tweets", json={"text": text}, auth=auth)
+resp = requests.post("https://api.twitter.com/2/tweets", json={"text": text}, auth=auth, timeout=15)
 data = resp.json()
 if resp.status_code in (200, 201):
     print(f"Tweet posted: {data['data']['id']}")

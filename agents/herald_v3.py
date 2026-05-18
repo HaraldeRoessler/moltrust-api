@@ -381,7 +381,7 @@ def generate_awareness_tweet(state: dict) -> str | None:
         available = TOPIC_SEEDS
         recent_seeds = []
 
-    seed = random.choice(available)
+    seed = random.choice(available)  # noqa: S311 — non-security topic seed selection
     recent_seeds.append(seed)
     state["recent_seeds"] = recent_seeds[-10:]
 

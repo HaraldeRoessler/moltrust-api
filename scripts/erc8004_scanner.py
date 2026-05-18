@@ -19,8 +19,10 @@ def query_subgraph(skip=0, first=1000):
         agentId owner agentWallet agentURI name description active createdAt
     }} }}'''
     data = json.dumps({"query": q}).encode()
+    if not SUBGRAPH.startswith(("http://", "https://")):
+        raise ValueError("SUBGRAPH must use http(s)://")
     req = Request(SUBGRAPH, data=data, headers={"Content-Type": "application/json", "User-Agent": "MolTrust/1.0"})
-    with urlopen(req, timeout=15) as r:
+    with urlopen(req, timeout=15) as r:  # noqa: S310 — scheme validated above
         return json.loads(r.read()).get("data", {}).get("agents", [])
 
 

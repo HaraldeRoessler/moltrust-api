@@ -12,3 +12,14 @@ jcs>=0.2.1
 python-multipart>=0.0.9
 starlette>=0.37.0
 APScheduler>=3.10.0
+defusedxml>=0.7.1
+# Pre-existing runtime deps that were imported but not declared. The
+# production deploy has them installed (otherwise the API wouldn't
+# start), but `pip install -r requirements.txt` on a fresh checkout
+# would fail at module load. Pinning loosely so existing prod versions
+# stay valid.
+bcrypt>=4.0.0
+stripe>=10.0.0
+cryptography>=42.0.0
+# Required for Pydantic EmailStr fields in app/billing.py CheckoutRequest.
+email-validator>=2.0.0

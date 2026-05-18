@@ -6,7 +6,13 @@ import re
 import sys
 import time
 import hashlib
-import xml.etree.ElementTree as ET
+# defusedxml protects against XXE / Billion Laughs / DTD-bomb attacks on
+# untrusted RSS feeds. Falls back to stdlib only if defusedxml isn't
+# installed yet — the requirements.txt bump in this commit declares it.
+try:
+    import defusedxml.ElementTree as ET  # type: ignore[import]
+except ImportError:
+    import xml.etree.ElementTree as ET  # type: ignore[no-redef]
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -106,8 +112,8 @@ def save_heartbeat(status: str, detail: str = ""):
 
 
 def url_key(url: str) -> str:
-    """Normalize URL for dedup."""
-    return hashlib.md5(url.strip().lower().encode()).hexdigest()
+    """Normalize URL for dedup. SHA-256 (MD5 is broken)."""
+    return hashlib.sha256(url.strip().lower().encode()).hexdigest()
 
 
 def parse_date(date_str: str) -> datetime | None:
