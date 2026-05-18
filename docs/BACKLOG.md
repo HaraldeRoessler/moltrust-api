@@ -72,6 +72,13 @@
 
 ## Medium
 
+### §9.2 global: Debit-vor-call_next für alle 12 paid Routes (sauberer Endzustand)
+- **Status:** Open
+- **Aufwand:** L
+- **Added:** 2026-05-18
+- **Source:** Idempotency-Spec D1 (PR #34) — Lars: Option A (keyed-only vor call_next) bestätigt
+- **Details:** D1-Option-A ist eine **bewusste, dokumentierte Risiko-Akzeptanz**: Aufrufer **ohne** `Idempotency-Key` behalten das alte Verhalten (Legacy-Pfad unverändert, Debit **nach** `call_next` → Doppel-Belastung bei Retry weiterhin möglich). Nur der Opt-in-keyed-Pfad bekommt Debit-vor-`call_next`. Sauberer Endzustand: §9.2 **global** — Debit-vor-`call_next` für **alle 12 paid `ENDPOINT_COSTS`-Routes**. Eigener Sprint: eigene 9-Sektionen-Spec, eigener §2.3-Cross-Review, **gestuft ausrollen — NICHT Big-Bang über alle 12 Routes** (Auto-Probe-Lesson: prozessweite Middleware-Änderung ist dieselbe Architektur-Klasse wie die Auto-Probe-Regression; schema-alignment §9.2 hat die Process-wide-Middleware-Frage bereits markiert). **Unabhängig von / nach** der Idempotency-Foundation (PR #34) und V1.4-1.
+
 ### ai_review.py — Synthese-400 war Billing (Credits falsche Org); Silent-Success-Defekt
 - **Status:** Primärursache RESOLVED (2026-05-18); sekundärer Code-Defekt Open → eigener Fix
 - **Aufwand:** S
