@@ -72,6 +72,14 @@
 
 ## Medium
 
+### ai_review.py — Claude-Synthese schlägt mit HTTP 400 fehl
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-18
+- **Source:** `/review`-Lauf 2026-05-18 (credit-idempotency-brief) — Synthese-Schritt der Multi-AI-Pipeline
+- **Details:** `ai_review.py` ruft die drei Reviewer (GPT-4o, Gemini 2.5 Flash, Perplexity Sonar Pro) erfolgreich auf, aber der finale Claude-Synthese-Call liefert `400 Bad Request` von `api.anthropic.com/v1/messages` (Output enthält `ERROR Synthesis: ...` statt der synthetisierten Bewertung; nur die Raw-Reviews liegen vor). Pipeline bleibt nutzbar (Raw-Reviews valide, manuelle Synthese möglich), aber **jeder** künftige `/review` verliert die automatische Synthese — stiller Qualitätsverlust auf einem WORKFLOW-§2.3-Disziplin-Werkzeug (Cross-Review-Gate). Wahrscheinlichste Ursache: veraltete/ungültige Claude-Model-ID oder Payload-Format im Synthese-Call (Bezug: MoltyCel-Model-Migration). Fix: Model-ID/Payload des Synthese-Calls in `~/moltstack/agents/ai_review.py` prüfen, auf aktuelles Modell heben, Smoke-Test mit Mini-Dokument. **Unabhängig von V1.4** — eigenes Fix-Item.
+
+
 ### API-Versionierung — Single-Source + v1-Contract klären (Phase-1-Analyse §8 Punkt 5)
 - **Status:** Open
 - **Aufwand:** M
