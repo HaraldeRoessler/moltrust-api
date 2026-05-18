@@ -53,76 +53,72 @@ Vorschlag = **@moltrust/aae 1.1.0 als kanonische Basis**, mit den obigen Empfehl
 
 ---
 
-## KANONISCHES D1-SCHEMA — FREIGEGEBEN 2026-05-18 (Lars)
+## KANONISCHES D1-SCHEMA — FREIGEGEBEN 2026-05-18 (Lars), Option (a) strukturelle Baseline
 
-Alle [LARS]-Punkte entschieden. Basis @moltrust/aae 1.1.0 + Console-Empfehlungen + folgende Vokabular-/Scope-Entscheidungen. **camelCase, flacher Wrapper `{mandate,constraints,validity}`.** Dies ist (nach dem Pflicht-§2.3-Cross-Review, Appendix unten) **das D1-Schema für V1.4-1**.
+Alle [LARS]-Punkte entschieden. Basis @moltrust/aae 1.1.0 + Console-Empfehlungen + die Vokabular-/Scope-Entscheidungen. **camelCase, flacher Wrapper `{mandate,constraints,validity}`.** TS-String-Literal-Unions in **Double-Quotes** (valides TS; die erste Fassung hatte durch ssh-Quoting die Quotes verloren — hier repariert). Die Sektion ist **strukturell kanonisch**; die Enforcement-Sperren stehen **NORMATIV** direkt darunter (Teil des Schemas, nicht nur Appendix B).
 
 ```ts
-type Purpose  = commerce | data_read | data_write | communication | compute | delegation;            // v1, erweiterbar
-type Obligation = log_all_actions | tool_allowlist | notify_on_step_up | human_in_loop;                 // v1, erweiterbar
-type Currency = USDC | EUR | CHF | USD;
-type SigningAlgorithm = Ed25519 | ML-DSA-65;
+type Purpose         = "commerce" | "data_read" | "data_write" | "communication" | "compute" | "delegation"; // v1, erweiterbar
+type Obligation      = "log_all_actions" | "tool_allowlist" | "notify_on_step_up" | "human_in_loop";          // v1; "tool_allowlist": inert v1 (s. NORMATIV)
+type Currency        = "USDC" | "EUR" | "CHF" | "USD";
+type SigningAlgorithm = "Ed25519" | "ML-DSA-65";
 
-interface Delegation {            // A-Variante (mit attenuationOnly)
+interface Delegation {            // STRUKTUR kanonisch; SEMANTIK NICHT-ENFORCEABLE bis V1.4-1 D3 (s. NORMATIV)
   allowed: boolean;
   maxSubAgents: number;
   maxDepth: number;
   attenuationOnly: boolean;       // Sub-Agent darf nur einschränken, nie erweitern
 }
 interface Mandate {
-  purpose: Purpose[];             // Enum-Array (nicht Freitext)
+  purpose: Purpose[];
   allowedActions: string[];
   deniedActions?: string[];
   resources?: string[];
-  delegation?: Delegation;
+  delegation?: Delegation;        // NICHT für Enforcement-Entscheidungen verwenden bis V1.4-1 D3 (s. NORMATIV)
 }
 interface TimeWindow {            // absolutes Fenster; KEINE wiederkehrenden Fenster in v1
-  notBefore: string;             // ISO 8601
-  notAfter: string;              // ISO 8601
+  notBefore: string;              // UTC ISO-8601 mit "Z" (B2)
+  notAfter: string;               // UTC ISO-8601 mit "Z" (B2)
 }
-interface Limits {               // typisierte Zahlen + separates Currency-Enum; nur Pro-Transaktion in v1
-  autonomousThreshold: number;
-  stepUpThreshold: number;
-  approvalThreshold: number;     // = Human-Approval-Schwelle (HIER, dedupliziert)
+interface Limits {                // B1: Schwellen sind INTEGER in kleinster Währungseinheit, keine Floats; Overflow -> reject
+  autonomousThreshold: number;    // integer minor units
+  stepUpThreshold: number;        // integer minor units
+  approvalThreshold: number;      // integer minor units; = Human-Approval-Schwelle (HIER, dedupliziert)
   maxTransactionsPerHour?: number;
   currency: Currency;
+  currencyScale: number;          // B1: Dezimalstellen der minor-unit für currency
 }
-interface Scope {
-  jurisdictions?: string[];
-  counterpartyMinScore?: number;
-}
+interface Scope { jurisdictions?: string[]; counterpartyMinScore?: number; }
 interface Constraints {
   timeWindow: TimeWindow;
   limits: Limits;
   scope?: Scope;
-  obligations?: Obligation[];     // Flag-Set; human_in_loop nur als Flag, Schwelle steht in limits.approvalThreshold
+  obligations?: Obligation[];     // Flag-Set; human_in_loop nur Flag (Schwelle in limits.approvalThreshold); "tool_allowlist" inert v1 (s. NORMATIV)
 }
 interface OnChainAnchor { chain: string; block: number; txHash: string; }
 interface Validity {              // = A (einzige in sich konsistente Variante)
   issuer: string;
   holderBinding: string;
-  issuedAt: string;
-  expiresAt: string;
+  issuedAt: string;               // UTC ISO-8601 "Z"
+  expiresAt: string;              // UTC ISO-8601 "Z"
   revocationEndpoint: string;
   signingAlgorithm?: SigningAlgorithm;
   onChainAnchor?: OnChainAnchor;
 }
 interface AAE { mandate: Mandate; constraints: Constraints; validity: Validity; }
+// Signatur-Serialisierung des AAE MUSS RFC 8785 (JCS) sein (B3).
 ```
 
-**Bewusst getroffene Entscheidungen (Nachweis 1:1 zum Auftrag):**
-- `purpose`-Enum v1 (erweiterbar): commerce, data_read, data_write, communication, compute, delegation. *(Weicht bewusst von npm 1.1.0 ab: `administration`/`general` raus, `compute` rein.)*
-- `obligations`-Enum v1 (erweiterbar): log_all_actions, tool_allowlist, notify_on_step_up, human_in_loop. Human-Approval-**Schwelle** dedupliziert → `limits.approvalThreshold`; obligations trägt nur das `human_in_loop`-**Flag**.
-- `timeWindow` = einfaches absolutes Fenster (notBefore/notAfter), **keine** wiederkehrenden Fenster v1.
-- `limits` = nur Pro-Transaktion-Schwellen; **kein** daily-cumulative cap v1 (additiv nachrüstbar).
-- `delegation` = A-Feldstruktur inkl. `attenuationOnly`. **Reconciliation mit der Live-`agent_delegation_config` (`constraint_mode ∈ {inherit,restrict,none}`) wird NICHT hier gelöst** → explizit **V1.4-1 D3**. (Pointer, bewusst nicht zu Ende geführt.)
-- `Validity` = A; `SigningAlgorithm` aus npm 1.1.0 übernommen.
+**NORMATIV — Nicht-Enforcement-Caveats (Teil des Schemas, nicht nur Appendix B):**
+- **`delegation` (Mandate.delegation / interface Delegation):** Struktur kanonisch; **Semantik NICHT durchsetzbar**, bis V1.4-1 D3 ein formales Attenuations-/Kompositionsmodell + Mapping zur Live-`agent_delegation_config` liefert. **Nicht für Enforcement-Entscheidungen verwenden.**
+- **`tool_allowlist` (Obligation):** **deklarativ/inert in v1; kein Inhaltsmodell;** nicht für Enforcement, bis ein Tool-Constraint-Modell entschieden ist.
+- **B1–B3 bleiben normativ:** B1 Integer-minor-units + `currencyScale` + Overflow=reject; B2 UTC-`Z` + Clock-Drift-Toleranz (Toleranz-Wert = Folge-Entscheidung); B3 RFC 8785 (JCS).
 
-**Offene Rest-Schemafrage (nicht geraten, Kandidat fürs Cross-Review/Folge):** `tool_allowlist` ist als Obligation-Flag modelliert; *wo* der konkrete Allowlist-Inhalt (welche Tools) getragen wird, ist in v1 **nicht** modelliert — bewusst nicht erfunden.
+**KONSEQUENZ für V1.4-1 (hier im Brief festgehalten; BACKLOG separat):** C1 hebt **D3 zum kritischen Pfad**. **V1.4-1 darf NICHT in Produktion, bevor D3 ein formales Delegations-Enforcement-Modell (Attenuation/Komposition + Mapping zur Live-`agent_delegation_config`) geliefert hat.** Drei-Reviewer-Konsens: Auslassen = **Privilege-Escalation-Risiko**. C2 (`tool_allowlist`-Inhaltsmodell) = **eigenes Follow-up-Item, KEIN D1-Blocker**.
 
-**Versions-Label (zu korrigieren, NICHT hier):** npm-Paket-`description` „MolTrust Protocol v0.5" ist falsch (Paket ist 1.1.0). Korrektur gehört in den **npm-Paket-Strang**, nicht in diese Kanonisierung / nicht in V1.4-1.
+**Bewusst getroffene Entscheidungen (1:1 zum Auftrag):** `purpose`-Enum v1 (`administration`/`general` raus, `compute` rein ggü. npm 1.1.0) · `obligations`-Enum v1 (Human-Approval-Schwelle dedupliziert in `limits.approvalThreshold`, obligations nur `human_in_loop`-Flag) · `timeWindow` absolut, keine recurring v1 · `limits` nur Pro-Transaktion, kein daily-cap v1 (additiv nachrüstbar) · `delegation` A-Feldstruktur inkl. `attenuationOnly` (Reconciliation → V1.4-1 D3, s. NORMATIV) · `Validity`=A · `SigningAlgorithm` aus npm 1.1.0.
 
-**WP v0.8 §4.6** bleibt als kaputt markiert (doppelter `issuer`-Key) — Korrektur = Whitepaper-Strang, nicht hier.
+**Versions-Label (zu korrigieren, NICHT hier):** npm-Paket-`description` „MolTrust Protocol v0.5" ist falsch (Paket ist 1.1.0) → npm-Paket-Strang. **WP v0.8 §4.6** bleibt als kaputt markiert (doppelter `issuer`-Key) → Whitepaper-Strang.
 
 ---
 
