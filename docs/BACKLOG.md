@@ -72,14 +72,12 @@
 
 ## Medium
 
-### ai_review.py — Claude-Synthese schlägt mit HTTP 400 fehl
-- **Status:** Open
+### ai_review.py — Synthese-400 war Billing (Credits falsche Org); Silent-Success-Defekt
+- **Status:** Primärursache RESOLVED (2026-05-18); sekundärer Code-Defekt Open → eigener Fix
 - **Aufwand:** S
 - **Added:** 2026-05-18
-- **Source:** `/review`-Lauf 2026-05-18 (credit-idempotency-brief) — Synthese-Schritt der Multi-AI-Pipeline
-- **Details:** `ai_review.py` ruft die drei Reviewer (GPT-4o, Gemini 2.5 Flash, Perplexity Sonar Pro) erfolgreich auf, aber der finale Claude-Synthese-Call liefert `400 Bad Request` von `api.anthropic.com/v1/messages` (Output enthält `ERROR Synthesis: ...` statt der synthetisierten Bewertung; nur die Raw-Reviews liegen vor). Pipeline bleibt nutzbar (Raw-Reviews valide, manuelle Synthese möglich), aber **jeder** künftige `/review` verliert die automatische Synthese — stiller Qualitätsverlust auf einem WORKFLOW-§2.3-Disziplin-Werkzeug (Cross-Review-Gate). Wahrscheinlichste Ursache: veraltete/ungültige Claude-Model-ID oder Payload-Format im Synthese-Call (Bezug: MoltyCel-Model-Migration). Fix: Model-ID/Payload des Synthese-Calls in `~/moltstack/agents/ai_review.py` prüfen, auf aktuelles Modell heben, Smoke-Test mit Mini-Dokument. **Unabhängig von V1.4** — eigenes Fix-Item.
-
-
+- **Source:** `/review`-Lauf 2026-05-18 (credit-idempotency-brief); Root-Cause-Verifikation 2026-05-18 (read-only API-Diagnose)
+- **Details:** **Korrektur der ursprünglichen Fehldiagnose.** Primärursache war **nicht** der Code: die Anthropic-API-Credits waren erschöpft bzw. in der **falschen Organisation** aufgeladen — `POST /v1/messages` lieferte für **jeden** Model-String identisch `invalid_request_error: "Your credit balance is too low"`. ~4 Tage Totalausfall aller Anthropic-Consumer (erste Beobachtung `moltbook.log 2026-05-14T09:00`, behoben `2026-05-18T10:38Z` nach Top-up in der korrekten Org `5f4b3dfb-…`). **Model-ID-Verdacht widerlegt:** `claude-sonnet-4-20250514` ist gültig und gelistet (`GET /v1/models` → HTTP 200), war nie das Problem; ein Modellwechsel hätte nichts behoben. **Sekundärer, echter Code-Defekt:** `ai_review.py` meldet `Synthesis : ✅` / `✅ Review abgeschlossen` und exitet 0 **auch wenn** der Synthese-Schritt einen Error-String zurückgibt — dieser Silent-Success hat die Fehldiagnose (Model-ID statt Billing) erst ermöglicht. Fix dieses Defekts: separater Code-PR (`fix/ai-review-silent-success`), nicht hier. **Unabhängig von V1.4** — eigenes Fix-Item.
 ### API-Versionierung — Single-Source + v1-Contract klären (Phase-1-Analyse §8 Punkt 5)
 - **Status:** Open
 - **Aufwand:** M
