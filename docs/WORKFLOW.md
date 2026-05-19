@@ -42,7 +42,7 @@ Was NICHT in Memory gehört:
 
 ### 1.2 STATUS.md — laufender System-Zustand
 
-Datei: `~/moltstack/docs/STATUS.md`
+Datei: `docs/STATUS.md` (repo-relativ, `MoltyCel/moltrust-api`)
 
 **Inhalt:** automatisch täglich aktualisierter Operating-State des Systems. Mensch-lesbar, kurz.
 
@@ -62,7 +62,7 @@ Sections:
 
 ### 1.3 docs/specs/ — Feature-Spezifikationen
 
-Pfad: `~/moltstack/docs/specs/`
+Pfad: `docs/specs/` (repo-relativ, `MoltyCel/moltrust-api`)
 
 **Inhalt:** alle Specs für aktuelle und kommende Features, mit explizitem Layer-Scope.
 
@@ -455,7 +455,7 @@ Als erste Handlung an einem Repo: `git worktree list`, `git status` je Worktree,
 
 ## Changelog
 
-- **2026-05-19 — V1.2.1 (Patch)**: §1.4–1.7 interne Pfade von `~/moltstack/docs|audits/…` auf **repo-relativ** (`MoltyCel/moltrust-api`) korrigiert — Selbstverortungs-Drift (WORKFLOW.md lebt in moltrust-api; das Server-Arbeitsverzeichnis `~/moltstack` ist verifiziert ein Checkout ebendieses Repos, kein eigenes Repo). **§1.2 (STATUS.md) und §1.3 (specs/) tragen dieselbe `~/moltstack/`-Drift — bewusst NICHT in diesem PR** (Scope explizit §1.4–1.7), als Folge-Befund offen. Reine Pfad-Textkorrektur, keine Regeländerung.
+- **2026-05-19 — V1.2.1 (Patch)**: **§1.2–1.7** interne Pfade durchgängig von `~/moltstack/docs|audits/…` auf **repo-relativ** (`MoltyCel/moltrust-api`) korrigiert — gesamtes Kapitel §1 hat jetzt eine **konsistente** Pfadkonvention (kein Halb-Drift, den §11 verhindern soll). Selbstverortungs-Drift: WORKFLOW.md lebt in moltrust-api; das Server-Arbeitsverzeichnis `~/moltstack` ist verifiziert ein Checkout ebendieses Repos, kein eigenes Repo. Reine Pfad-Textkorrektur, keine §11-/Regeländerung.
 - **2026-05-19 — V1.2**: Sektion 11 (Repo-as-Source-of-Truth & Deploy-Disziplin) ergänzt — schliesst die **drei real passierten** moltrust-web-Reconcile-Drift-Ursachen (Server-Datei ohne Repo-Commit / Doku-Iteration nur im Chat / Zwei-Console-Worktree-Kollision) in **4 schlanken Regeln**: 11.1 Repo-first für versionierte Dateien (+ `post-sha==repo-sha`), 11.2 Iteration=Commit, 11.3 Worktree-Isolation + serieller Server-Zugriff, 11.4 Session-Start-Frischecheck — Schlüsselbegriffe je inline definiert. **Ehrliche Bereichsgrenze** im Intro: §11 regiert repo-verwaltete Dateien; Server-Infra (nginx/systemd/cron) bewusst out-of-scope (deklarierte Grenze, kein Schlupfloch). Weitere Härtung (Infra-Repo-Überführung, Build-/Supply-Chain-Integrität SLSA/NIST-SSDF, WORM-Audit-Repo, atomarer Lock, formaler Notfallpfad) als entkoppeltes `docs/BACKLOG.md`-Item festgehalten — kein §11-Blocker. Zusätzlich Selbstverortungs-Korrektur (Schlusszeile → kanonisches `MoltyCel/moltrust-api`). Durchlief 5 Entwurfs-Iterationen + 2 §2.3-Cross-Review-Runden (GPT-4o+Gemini+Perplexity): „GRUNDLEGEND ÜBERDENKEN" → „ÜBERARBEITEN" → Kernfragen (3 Ursachen geschlossen, Bereichsgrenze ehrlich) zweireviewer-bestätigt, Begriffs-Präzision final eingearbeitet.
 - **2026-05-13 — V1.1**: Sektion 6.2 (Secret-Leak-Detected) substantiell erweitert mit Multi-Storage-Audit-Checkliste (8 Speicherorte) und Post-Rotation-Verifikations-Step. Lesson 13.05.26 dokumentiert (MoltyCel-PAT-Rotation übersah `moltycelbot/secrets/GITHUB_PAT` → 24h 401-Storm). Sektion 10 Bootstrap-Items: completed-Markers für BACKLOG.md (V1.1+V1.2 fertig), Telegram-Token-Rotation, Memory #25 Korrektur. Bootstrap-Hinweis-Paragraph aus V1 bleibt erhalten (ungewollt im Initial-V1.1-Edit entfernt, via Follow-up-Commit restored).
 - **2026-05-12 — V1**: Initial. Definiert State-of-Truth Architektur, Pre/In/Post-Sprint-Disziplinen, Periodic Routines, Notfall-Routinen, 10 verbotene Anti-Patterns. Bootstrap-Hinweis in Sektion 10: Bootstrap-Items brauchen keine eigene Spec.
