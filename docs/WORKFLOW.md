@@ -82,7 +82,7 @@ Format pro Spec: ein Markdown-File `YYYY-MM-DD_<feature-name>.md` mit Sections:
 
 ### 1.4 docs/decisions/ — Architecture Decision Records
 
-Pfad: `~/moltstack/docs/decisions/`
+Pfad: `docs/decisions/` (repo-relativ, `MoltyCel/moltrust-api`)
 
 **Inhalt:** kurze 1-Pager pro durabel-wichtige Entscheidung. Format: `NNNN-<slug>.md` (sequenzielle Nummerierung).
 
@@ -103,7 +103,7 @@ Nicht decision-worthy: Implementations-Details, Bugfixes, kosmetische Änderunge
 
 ### 1.5 docs/sprints/ — Sprint-Plans und Reports
 
-Pfad: `~/moltstack/docs/sprints/`
+Pfad: `docs/sprints/` (repo-relativ, `MoltyCel/moltrust-api`)
 
 **Inhalt:** Pre-Deploy-Reports, Post-Deploy-Reports, Workflow-Pläne für laufende Sprints (z.B. `2026-05-12_smithery-v2-workflow.md`).
 
@@ -115,7 +115,7 @@ Lebenszyklus pro Sprint:
 
 ### 1.6 audits/ — Audit-Outputs und Diagnose-Artefakte
 
-Pfad: `~/moltstack/audits/`
+Pfad: `audits/` (repo-relativ, `MoltyCel/moltrust-api`)
 
 **Inhalt:** Static-Analysis-Outputs, GPT-5-Verification-Bundles, Header-Captures, andere Diagnose-Outputs.
 
@@ -123,7 +123,7 @@ Pro Datei: `YYYY-MM-DD_<topic>.md`. Diese Dateien sind "Forensik-Material", werd
 
 ### 1.7 Backlog
 
-Pfad: `~/moltstack/docs/BACKLOG.md`
+Pfad: `docs/BACKLOG.md` (repo-relativ, `MoltyCel/moltrust-api`)
 
 **Inhalt:** Liste aller offenen Items mit Severity und letztem Touch-Date. Sortiert nach Severity.
 
@@ -455,10 +455,11 @@ Als erste Handlung an einem Repo: `git worktree list`, `git status` je Worktree,
 
 ## Changelog
 
+- **2026-05-19 — V1.2.1 (Patch)**: §1.4–1.7 interne Pfade von `~/moltstack/docs|audits/…` auf **repo-relativ** (`MoltyCel/moltrust-api`) korrigiert — Selbstverortungs-Drift (WORKFLOW.md lebt in moltrust-api; das Server-Arbeitsverzeichnis `~/moltstack` ist verifiziert ein Checkout ebendieses Repos, kein eigenes Repo). **§1.2 (STATUS.md) und §1.3 (specs/) tragen dieselbe `~/moltstack/`-Drift — bewusst NICHT in diesem PR** (Scope explizit §1.4–1.7), als Folge-Befund offen. Reine Pfad-Textkorrektur, keine Regeländerung.
 - **2026-05-19 — V1.2**: Sektion 11 (Repo-as-Source-of-Truth & Deploy-Disziplin) ergänzt — schliesst die **drei real passierten** moltrust-web-Reconcile-Drift-Ursachen (Server-Datei ohne Repo-Commit / Doku-Iteration nur im Chat / Zwei-Console-Worktree-Kollision) in **4 schlanken Regeln**: 11.1 Repo-first für versionierte Dateien (+ `post-sha==repo-sha`), 11.2 Iteration=Commit, 11.3 Worktree-Isolation + serieller Server-Zugriff, 11.4 Session-Start-Frischecheck — Schlüsselbegriffe je inline definiert. **Ehrliche Bereichsgrenze** im Intro: §11 regiert repo-verwaltete Dateien; Server-Infra (nginx/systemd/cron) bewusst out-of-scope (deklarierte Grenze, kein Schlupfloch). Weitere Härtung (Infra-Repo-Überführung, Build-/Supply-Chain-Integrität SLSA/NIST-SSDF, WORM-Audit-Repo, atomarer Lock, formaler Notfallpfad) als entkoppeltes `docs/BACKLOG.md`-Item festgehalten — kein §11-Blocker. Zusätzlich Selbstverortungs-Korrektur (Schlusszeile → kanonisches `MoltyCel/moltrust-api`). Durchlief 5 Entwurfs-Iterationen + 2 §2.3-Cross-Review-Runden (GPT-4o+Gemini+Perplexity): „GRUNDLEGEND ÜBERDENKEN" → „ÜBERARBEITEN" → Kernfragen (3 Ursachen geschlossen, Bereichsgrenze ehrlich) zweireviewer-bestätigt, Begriffs-Präzision final eingearbeitet.
 - **2026-05-13 — V1.1**: Sektion 6.2 (Secret-Leak-Detected) substantiell erweitert mit Multi-Storage-Audit-Checkliste (8 Speicherorte) und Post-Rotation-Verifikations-Step. Lesson 13.05.26 dokumentiert (MoltyCel-PAT-Rotation übersah `moltycelbot/secrets/GITHUB_PAT` → 24h 401-Storm). Sektion 10 Bootstrap-Items: completed-Markers für BACKLOG.md (V1.1+V1.2 fertig), Telegram-Token-Rotation, Memory #25 Korrektur. Bootstrap-Hinweis-Paragraph aus V1 bleibt erhalten (ungewollt im Initial-V1.1-Edit entfernt, via Follow-up-Commit restored).
 - **2026-05-12 — V1**: Initial. Definiert State-of-Truth Architektur, Pre/In/Post-Sprint-Disziplinen, Periodic Routines, Notfall-Routinen, 10 verbotene Anti-Patterns. Bootstrap-Hinweis in Sektion 10: Bootstrap-Items brauchen keine eigene Spec.
 
 ---
 
-**Ende WORKFLOW.md V1.2. Dies ist ein lebendiges Dokument. Updates via PR auf das kanonische Repo `MoltyCel/moltrust-api` (Pfad `docs/WORKFLOW.md`) mit Changelog-Eintrag. Hinweis: „moltstack" bezeichnet anderswo im Dokument die Plattform/den Server-Arbeitsbereich (`~/moltstack/…`), NICHT den Repo-Ort dieses Dokuments.**
+**Ende WORKFLOW.md V1.2.1. Dies ist ein lebendiges Dokument. Updates via PR auf das kanonische Repo `MoltyCel/moltrust-api` (Pfad `docs/WORKFLOW.md`) mit Changelog-Eintrag. Hinweis: „moltstack" bezeichnet anderswo im Dokument die Plattform/den Server-Arbeitsbereich (`~/moltstack/…`), NICHT den Repo-Ort dieses Dokuments.**
