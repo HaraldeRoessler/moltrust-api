@@ -429,13 +429,36 @@ Items die direkt aus diesem Dokument folgen, aber noch nicht existieren:
 
 Diese Items werden in `docs/BACKLOG.md` mit aufgenommen.
 
+## 11. Repo-as-Source-of-Truth & Deploy-Disziplin
+
+Diese Sektion schliesst die **drei real passierten** Drift-Ursachen des moltrust-web-Reconcile (Mai 2026): (a) server-führender Datei-Inhalt ohne Repo-Commit, (b) nur-im-Chat lebende Doku-Iterationen, (c) Zwei-Console-Kollision im selben Worktree. Nicht jeden theoretischen Pfad — bewusst schlank.
+
+**Geltungsbereich (ehrliche Bereichsgrenze, kein Schlupfloch):** §11 deckt **repo-verwaltete Dateien** (Code, Content, App-Config). **Server-Infrastruktur (nginx, systemd, cron) ist DERZEIT nicht repo-verwaltet** — Änderungen daran erfordern bis zu einer künftigen Überführung **manuelle Sorgfalt + Audit-Eintrag**; die Überführung ist ein eigenes, zeitlich entkoppeltes Backlog-Item (kein vorgelagerter Sprint). Das ist eine **deklarierte Bereichsgrenze**, kein legalisiertes Loch *innerhalb* des Bereichs. Weitergehende Härtung (Build-/Supply-Chain-Integrität, WORM-Audit, atomarer Lock, formaler Notfallpfad) ist bewusst **Backlog**, nicht §11.
+
+### 11.1 Repo-first für versionierte Dateien
+
+Jede Änderung an einer repo-verwalteten Datei (Code/Content/App-Config) MUSS vorher als **gemergter Commit im zuständigen Repo** liegen; ein Deploy rollt **ausschliesslich Repo-Inhalt** aus. Nach jedem Deploy gilt pro Datei `post-sha == repo-sha`, dokumentiert; ein Deploy ohne diese verifizierte Gleichheit gilt als **nicht abgeschlossen**. **Verboten:** server-führenden Datei-Inhalt erzeugen/ändern, der nicht aus einem Repo-Commit stammt. — *Repo-verwaltete Datei* = Datei, deren autoritative Quelle ein Commit im *zuständigen Repo* ist; *zuständiges Repo* = das produktive GitHub-Repo des Artefakts (Code/App-Config/Docs → `MoltyCel/moltrust-api`, Web-Root → `MoltyCel/moltrust-web`) — **nicht** ein lokales/temporäres/persönliches Verzeichnis oder Fork.
+
+### 11.2 Iteration = Commit
+
+Jede Arbeitsiteration an einem versionierten Artefakt wird committet, **bevor** die nächste beginnt. *Arbeitsiteration* = ab dem Moment, in dem ein **Artefakt-Kandidat** existiert (eine Änderung, die committet werden *könnte*) — Chat-/Console-Inhalt ist **nicht** von 11.2 ausgenommen, sobald er Artefakt-Kandidat ist; er ist **kein** gültiger Speicherort dafür. Eine Versionsangabe („Dokument ist v7") gilt nur, wenn diese Version im zuständigen Repo liegt.
+
+### 11.3 Worktree-Isolation + serieller Server-Zugriff
+
+**Pro Console ein eigenes `git worktree`-Verzeichnis** (getrennte HEADs/Working-Trees, gemeinsamer Objektstore); der shared Anchor wird nie aktiv editiert. Server-/Live-schreibende Arbeit läuft **seriell — eine Console am Server zur Zeit**. *Server frei* = definierter Ablauf: die deployende Console fragt explizit an; die andere bestätigt ausdrücklich (erkennbar daran, dass sie selbst **keine** offene Server-schreibende Operation hält); Anfrage **und** Bestätigung werden mit Zeitstempel festgehalten (Commit-/Ticket-/Chat-Protokoll). Echte atomare Lock-Härtung gegen Race/OOM ist das bewusst entkoppelte Backlog-Item — 11.3 macht den Ablauf nur so eindeutig wie ohne Lock möglich.
+
+### 11.4 Session-Start-Frischecheck
+
+Als erste Handlung an einem Repo: `git worktree list`, `git status` je Worktree, `git fetch origin` + `origin/main`-Hash (ahead/behind). Neue Arbeit startet in einem **frischen Branch** im dedizierten Console-Worktree. *Frischer Branch* = abgezweigt von `origin/main` **nach** `git fetch`, **0 Commits behind** `origin/main` — **nicht** von lokalem/stale `main`.
+
 ---
 
 ## Changelog
 
+- **2026-05-19 — V1.2**: Sektion 11 (Repo-as-Source-of-Truth & Deploy-Disziplin) ergänzt — schliesst die **drei real passierten** moltrust-web-Reconcile-Drift-Ursachen (Server-Datei ohne Repo-Commit / Doku-Iteration nur im Chat / Zwei-Console-Worktree-Kollision) in **4 schlanken Regeln**: 11.1 Repo-first für versionierte Dateien (+ `post-sha==repo-sha`), 11.2 Iteration=Commit, 11.3 Worktree-Isolation + serieller Server-Zugriff, 11.4 Session-Start-Frischecheck — Schlüsselbegriffe je inline definiert. **Ehrliche Bereichsgrenze** im Intro: §11 regiert repo-verwaltete Dateien; Server-Infra (nginx/systemd/cron) bewusst out-of-scope (deklarierte Grenze, kein Schlupfloch). Weitere Härtung (Infra-Repo-Überführung, Build-/Supply-Chain-Integrität SLSA/NIST-SSDF, WORM-Audit-Repo, atomarer Lock, formaler Notfallpfad) als entkoppeltes `docs/BACKLOG.md`-Item festgehalten — kein §11-Blocker. Zusätzlich Selbstverortungs-Korrektur (Schlusszeile → kanonisches `MoltyCel/moltrust-api`). Durchlief 5 Entwurfs-Iterationen + 2 §2.3-Cross-Review-Runden (GPT-4o+Gemini+Perplexity): „GRUNDLEGEND ÜBERDENKEN" → „ÜBERARBEITEN" → Kernfragen (3 Ursachen geschlossen, Bereichsgrenze ehrlich) zweireviewer-bestätigt, Begriffs-Präzision final eingearbeitet.
 - **2026-05-13 — V1.1**: Sektion 6.2 (Secret-Leak-Detected) substantiell erweitert mit Multi-Storage-Audit-Checkliste (8 Speicherorte) und Post-Rotation-Verifikations-Step. Lesson 13.05.26 dokumentiert (MoltyCel-PAT-Rotation übersah `moltycelbot/secrets/GITHUB_PAT` → 24h 401-Storm). Sektion 10 Bootstrap-Items: completed-Markers für BACKLOG.md (V1.1+V1.2 fertig), Telegram-Token-Rotation, Memory #25 Korrektur. Bootstrap-Hinweis-Paragraph aus V1 bleibt erhalten (ungewollt im Initial-V1.1-Edit entfernt, via Follow-up-Commit restored).
 - **2026-05-12 — V1**: Initial. Definiert State-of-Truth Architektur, Pre/In/Post-Sprint-Disziplinen, Periodic Routines, Notfall-Routinen, 10 verbotene Anti-Patterns. Bootstrap-Hinweis in Sektion 10: Bootstrap-Items brauchen keine eigene Spec.
 
 ---
 
-**Ende WORKFLOW.md V1.1. Dies ist ein lebendiges Dokument. Updates via PR auf moltstack-Repo mit Changelog-Eintrag.**
+**Ende WORKFLOW.md V1.2. Dies ist ein lebendiges Dokument. Updates via PR auf das kanonische Repo `MoltyCel/moltrust-api` (Pfad `docs/WORKFLOW.md`) mit Changelog-Eintrag. Hinweis: „moltstack" bezeichnet anderswo im Dokument die Plattform/den Server-Arbeitsbereich (`~/moltstack/…`), NICHT den Repo-Ort dieses Dokuments.**

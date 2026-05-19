@@ -79,6 +79,19 @@
 
 ## Medium
 
+### §11-Härtung & Infra-Repo-Überführung (aus §11-Cross-Reviews, bewusst aus V4 ausgeklammert)
+- **Status:** Open
+- **Aufwand:** L (mehrere Teil-Sprints, teils produktionskritisch)
+- **Added:** 2026-05-19
+- **Source:** §11 §2.3-Cross-Review + Re-Cross-Review 2026-05-19 (GPT-4o+Gemini+Perplexity); Lars-Entscheidung §11 V4 (radikale Vereinfachung, Härtung zeitlich entkoppelt)
+- **Details:** §11 V4 schließt bewusst nur die 3 real passierten Drift-Ursachen (Server-Datei ohne Commit / Doku-Iteration im Chat / Console-Kollision). Die von den Cross-Reviews als Härtung empfohlenen Punkte sind **NICHT verloren**, sondern hier als **zeitlich entkoppelte** Backlog-Items festgehalten — **kein §11-V4-Merge-Blocker, kein vorgelagerter Sprint**:
+  1. **Infra-Config-Repo-Überführung** — nginx (4 sites/~479 Z.), systemd (9 Units), cron (43 user-Zeilen + 5 `/etc/cron.d`), Secrets-**Inventar** (61 Keys — nur Namen, **nie Werte**) deklarativ unter Versionskontrolle + non-disruptives, verifiziertes Apply pro Kategorie. Eigener mehrtägiger Infra-Sprint (eigenes Spec, §2.3, gestaffelt; Outage-Risiko nginx/systemd). Bis dahin gilt die §11-V4-Intro-Bereichsgrenze (manuelle Sorgfalt + Audit-Eintrag).
+  2. **Build-/Supply-Chain-Integrität** — deterministische/isolierte Build-Pipeline, CI-Workspace-Mutation = Drift; Alignment **SLSA v1.0 / NIST SP 800-218 (SSDF)**. Eigener Spec `docs/specs/build-pipeline-integrity`.
+  3. **WORM-/Append-only-Audit-Repo** — dediziertes externes Audit-Repo (branch-protected, no-rewrite, signiert, restriktiver Write) für Deploy-/Notfall-/Lock-Events.
+  4. **Atomarer Deploy-Lock** — Lock-File mit Inhaber/UTC-Timestamp/PID, `kill -0`-Liveness + Max-Alter + expliziter Stale-Reclaim-mit-Audit (härtet die schlanke serielle V4-Regel 11.3 gegen OOM/HW-Ausfall/Race).
+  5. **Formaler Notfall-/Hotfix-Pfad** — P0/P1-only, Rolle + 4-Augen, Rate-Limit, 24-h-Nachbearbeitung, Eskalation (V4 nutzt stattdessen Bereichsgrenze + manuelle Sorgfalt).
+- **Kopplung:** keine harte Kopplung an den §11-V4-Merge (entkoppelt). Punkt 1 ist der größte/produktionskritischste; alle einzeln priorisierbar. Cross-Review-Reports: `~/moltstack/moltstack/reviews/20260519_082456_*` + `20260519_084218_*`.
+
 ### Weg B — `/identity/register` keyless machen (A2A-first / OD-3)
 - **Status:** Open
 - **Aufwand:** L (Auth-Pfad → voller WORKFLOW; + moltrust-web Folge-Deploy)
