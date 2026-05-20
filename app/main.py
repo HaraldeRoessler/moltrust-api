@@ -3382,8 +3382,7 @@ async def extended_agent_card(
             "endpoints": {
                 "sybil-scan": {"price": "0.10", "method": "GET", "path": "/guard/api/sybil/scan/{addr}"},
                 "agent-score": {"price": "0.05", "method": "GET", "path": "/guard/api/agent/score/{addr}"},
-                "market-check": {"price": "0.05", "method": "GET", "path": "/guard/api/market/check/{addr}"},
-                "events-feed": {"price": "0.05", "method": "GET", "path": "/guard/events/feed"}
+                "market-check": {"price": "0.05", "method": "GET", "path": "/guard/api/market/check/{addr}"}
             }
         }
     }
