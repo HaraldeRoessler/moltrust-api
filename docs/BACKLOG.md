@@ -64,12 +64,12 @@
 - **Details:** 9 modified + 14 untracked Files inkl. mehrerer .bak-Files und neuer Routen (events.ts, wallet.ts, aeoess-verify.ts). Separate Triage-Session analog zu moltstack PR #18. master-branch (nicht main).
 
 ### moltguard-Repo nach GitHub bringen (`MoltyCel/moltguard`, §11.1-Konformität)
-- **Status:** Open
+- **Status:** **DONE 2026-05-20**
 - **Aufwand:** L
 - **Added:** 2026-05-20
+- **Done-URL:** <https://github.com/MoltyCel/moltguard> (public, Apache-2.0, branch-protected on `main`)
 - **Source:** MoltGuard-Discovery-Phase-1 SPEC §9.5 Drift-Forensik (`/guard/events/feed`-Pricing-Diskrepanz, PR #48)
-- **Sequenzierung:** **NACH** MoltGuard-Discovery-P2 (OpenAPI-Generierung). Vorarbeit (Tree-Triage) hängt am bestehenden Item oben.
-- **Details:** moltguard ist heute **server-local-only** (`~/moltguard/.git`, keine `origin`-Remote). Konsequenz: §11.1 `post-sha == repo-sha` kann **strukturell nicht** erfüllt werden, weil keine externe Wahrheitsquelle existiert; Code-Review pro Change ist nicht möglich (kein PR-Workflow); Drift-Forensik wie heute (§9.5-Befund) bleibt aufwendig (SSH-only). Erste sichtbare Folge: zwei Pricing-Drift-Fälle (`/guard/events/feed` und `/guard/api/market/feed`-Doppelpfad), die ein PR-Review früher gefangen hätte. **Scope der Remote-Migration:** (1) Working-Tree-Triage abschließen (siehe Item oben), (2) `MoltyCel/moltguard` Repo anlegen (Apache-2.0 Lizenz, README, CI-Skeleton), (3) `git push -u origin master` (oder Umbenennung master→main), (4) Branch-Protection, (5) erstes `feature/openapi`-PR aus P2-Implementation als Lackmus-Test. **Geplante Reihenfolge in der Praxis:** MoltGuard-Discovery-P2 wird auf dem heutigen server-local-Repo gefahren (kein Blocker für die OpenAPI-Generierung selbst), die Remote-Migration ist eigener Sprint danach. Aber: jede weitere Iteration ohne Remote verlängert den Cleanup-Aufwand.
+- **Sprint-Outcome (2026-05-20):** 9-Phasen-Sprint per SPEC `docs/specs/2026-05-20_moltguard-remote-migration-SPEC.md` (PR #52, merged `68e27d1`). P2 Working-Tree-Triage: 11 audit-sync-Commits + 11 .bak in server-only `~/moltguard/.attic/`. P3 LICENSE Apache-2.0 + `package.json.license` Update + README-Polish + `.gitignore`-Erweiterung. P4 `master → main` rename. P5 Final Secret-Audit cleared (0 echte Hits, 3 SPEC-noted false-positives in `src/services/skill.ts` regex-strings korrekt excluded). P6 `gh repo create --private`. P7 First-push via neuem deploy-key `github_moltguard_deploy` + `~/.ssh/config` Alias `github-moltguard`. P8 CI-PR #1 (`tsc` + `vitest`, SHA-pinned actions) + §2.3 Cross-Review (Verdikt ÜBERARBEITEN → P0/P1 Findings adressiert in `e1e6056`) — CI grün auf main `6e8a90b`. P9-Vor-Check: 3 README-Issues (Lizenz-Duplikat, Build-Duplikat, Pricing-Drift 5-10× off) — fixed in PR #2, gemerged als `e99765f`. P9 visibility-toggle `public` + branch-protection auf `main` (`required_status_checks: Build & Test`, `allow_force_pushes: false`, `allow_deletions: false`, PR-required). **§11.1 jetzt vollständig erfüllt** für moltguard.
 
 ### WORKFLOW.md Bootstrap-Items (Scripts)
 - **Status:** Open
@@ -153,15 +153,23 @@
 - **Aufwand:** S
 - **Added:** 2026-05-20
 - **Source:** MoltGuard-Discovery-Phase-1 SPEC §9.5 Drift-Forensik (PR #48)
-- **Sequenzierung:** Wird bei **MoltGuard-Discovery-P2** (OpenAPI-Generierung aus `x402-prices.ts`) automatisch greifbar, weil die Spec-Generierung gegen einen konsistenten Pricing-Datensatz laufen muss. Eigenständiger Fix vorher möglich, aber durch P2 ohnehin erzwungen.
-- **Details:** `~/moltguard/src/middleware/x402-prices.ts` enthält `/api/market/feed` in BEIDEN Listen — `X402_PRICES` (Line 10, $0.10) **und** `X402_FREE_PATHS` (Line 50). Middleware-Reihenfolge in `x402.ts` (`isFree()` zuerst → `getPrice()` danach) bedeutet: **FREE gewinnt** → Live-Verhalten ist free (200 OK ohne Payment, verifiziert 2026-05-20). Discovery-Inventory (`/guard/api/info`) listet es trotzdem als paid → klassische Drift-Klasse. **Entscheidung Lars (2026-05-20):** free legitimieren, d.h. Eintrag aus `X402_PRICES` streichen — Live-Konsumenten verlassen sich seit Monaten auf das free-Verhalten. Code-Change ist 1 Zeile in x402-prices.ts. **Voraussetzung für Code-Change:** moltguard-Remote-Migration (siehe `### moltguard-Repo nach GitHub bringen` unter High) ODER server-local Commit mit explizitem Audit-Eintrag.
+- **Sequenzierung:** **Jetzt startbar** (post moltguard-Remote-Migration 2026-05-20 — siehe entsprechendes HIGH-Item, DONE). Code-Change = 1 Zeile in `x402-prices.ts`, via regulärem PR-Workflow auf `MoltyCel/moltguard`.
+- **Details:** `~/moltguard/src/middleware/x402-prices.ts` enthält `/api/market/feed` in BEIDEN Listen — `X402_PRICES` (Line 10, $0.10) **und** `X402_FREE_PATHS` (Line 50). Middleware-Reihenfolge in `x402.ts` (`isFree()` zuerst → `getPrice()` danach) bedeutet: **FREE gewinnt** → Live-Verhalten ist free (200 OK ohne Payment, verifiziert 2026-05-20). Discovery-Inventory (`/guard/api/info`) listet es trotzdem als paid → klassische Drift-Klasse. **Entscheidung Lars (2026-05-20):** free legitimieren, d.h. Eintrag aus `X402_PRICES` streichen — Live-Konsumenten verlassen sich seit Monaten auf das free-Verhalten. Plus: hand-curated `src/openapi/spec.ts` (Discovery-P2) sollte den Pricing-Eintrag dafür auch entfernen, damit `/guard/openapi.json` konsistent wird.
+
+### MoltGuard CI Actions v4 → v5 upgrade (Node 24 readiness)
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-20
+- **Source:** GitHub Actions annotation auf moltguard CI-Runs 2026-05-20: „Node.js 20 actions are deprecated. Node.js 24 default ab 2026-06-02, Node 20 removed 2026-09-16."
+- **Sequenzierung:** Hard-Deadline **2026-09-16** (Node 20 entfernt aus Runners). Komfort-Deadline **2026-06-02** (Default switch zu Node 24). Niedrige Friktion.
+- **Details:** `MoltyCel/moltguard/.github/workflows/ci.yml` SHA-pinnt heute `actions/checkout@v4` und `actions/setup-node@v4` — beide laufen auf Node.js 20 in der Action-Runtime. GitHub deprecation: 2026-06-02 wird Default Node 24, 2026-09-16 wird Node 20 entfernt. Upgrade-Path: SHA-pin auf `actions/checkout@v5` + `actions/setup-node@v5` (latest commits). Live SHAs fetchen analog zum P8-Pattern (`gh api repos/actions/checkout/git/refs/tags/v5`). Vermutlich 5-Minuten-PR.
 
 ### MoltGuard Validation Hardening — Zod-Schemas + Validator-Middleware + zod-openapi-Codegen
 - **Status:** Open
 - **Aufwand:** L (1–2 Tage)
 - **Added:** 2026-05-20
 - **Source:** MoltGuard-Discovery-Phase-2 Generator-Choice-Entscheidung (P2.1 §9.1-Prämissen-Check) — die SPEC-Tendenz „zod-openapi weil moltguard schon Zod-Schemas hat" wurde durch read-only Check widerlegt: `src/schemas/*.ts` sind reine TS-Interfaces + `as const`-Literale (`grep -c "zod"` = 0 in allen 6 Files), keine Zod-Validatoren. Routes machen ad-hoc Parsing (`c.req.json().catch(()=>({}))`, `c.req.param()`, `c.req.query()`) ohne strukturierte Validierung.
-- **Sequenzierung:** Nach **MoltGuard-Discovery-P4** (llms.txt-Block) und **NACH `moltguard-Repo nach GitHub bringen`** (HIGH-Item) — denn ein Validierungs-Refactor mit 6 Schema-Konvertierungen + ~22 Route-File-Anschlüssen braucht zwingend PR-Review-Schutz.
+- **Sequenzierung:** **Jetzt startbar.** Discovery-P4 ist live, `MoltyCel/moltguard` ist seit 2026-05-20 mit branch-protected `main` + PR-Workflow + CI auf GitHub (siehe DONE-Item oben). Der Validierungs-Refactor mit 6 Schema-Konvertierungen + ~22 Route-File-Anschlüssen hat damit den nötigen PR-Review-Schutz.
 - **Details:** Aktueller Stand (post-P2): `src/openapi/spec.ts` ist hand-curated TS-Modul, Variante (III) aus dem SPEC §9.1. Dieser Sprint upgradet auf Variante (I): (1) 6 Schema-Files in echte Zod-Schemas konvertieren (z.B. `z.object({...})` statt `as const`-Literale), (2) `@hono/zod-openapi` als Dep installieren, (3) `OpenAPIHono` statt vanilla `Hono` als App-Konstruktion in `src/index.ts`, (4) pro Route: `app.openapi(createRoute({...}), handler)` mit Zod-Schema-Refs für Request/Response, (5) `src/openapi/spec.ts` durch Codegen-Output ersetzen — Single Source of Truth ist dann der Route-Code. **Risiko-Mitigation:** bestehende toleranten Defaults (`c.req.json().catch(()=>({}))`) werden zu Strict-Validierung — pro Route prüfen ob Konsumenten 400er-Antworten verkraften (Agent-Konsumenten: vermutlich ja; legacy Frontend-Clients: ggf. Migration nötig). **Akzeptanz:** `/guard/openapi.json` muss byte-äquivalent oder eng-äquivalent zur heutigen hand-curated Version sein (Drift-Schutz gegen versehentliche Discovery-Regression).
 
 ### .well-known-Mirror-Generierung + Deprecation-Header (Phase-1-Analyse §8 Punkt 4)
@@ -296,6 +304,13 @@
 ---
 
 ## Low
+
+### MoltGuard CONFORMANCE.md-Drift-Check via CI
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-20
+- **Source:** Post-moltguard-Migration-Audit 2026-05-20 — `scripts/gen_conformance.py` ist server-local (audit-sync committed in `cc736e9`), läuft aber heute nicht automatisch im CI-Pfad.
+- **Details:** `MoltyCel/moltguard/scripts/gen_conformance.py` generiert `CONFORMANCE.md` aus dem Live-Stand. Heute manueller Aufruf erforderlich, sodass Drift zwischen Code und CONFORMANCE.md unbemerkt entstehen kann. CI-Step in `.github/workflows/ci.yml`: nach build den Generator laufen lassen + `git diff --exit-status CONFORMANCE.md` prüfen — failed run signalisiert „CONFORMANCE.md ist stale". Niedrig-priorität weil heute keine externen Konsumenten von CONFORMANCE.md, aber gute Hygiene-Maßnahme analog zum Discovery-Drift-Pattern. Verbunden mit moltguard-PR im normalen Workflow.
 
 ### Separate Test-DB für Credit-Tests
 - **Status:** Open
