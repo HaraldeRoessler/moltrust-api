@@ -46,6 +46,13 @@ from app.provenance.confidence import (
 from app.provenance.reconcile import (
     check_ipr_status, reconcile_pending, retry_failed, reanchor_ipr,
 )
+from app.moltguard_discovery import (
+    warm_cache_on_startup as _moltguard_warm_cache,
+    get_spec as _moltguard_get_spec,
+    build_x402_pricing_extension as _build_x402_pricing_extension,
+    build_moltguard_extension as _build_moltguard_extension,
+    build_moltguard_discovery_skill as _build_moltguard_discovery_skill,
+)
 
 app = FastAPI(title="MolTrust API", version="2.4", docs_url=None)
 
@@ -3101,6 +3108,14 @@ async def load_api_keys():
             print(f"Could not load API keys: {e}")
 
 
+# MoltGuard discovery build-time lookup (Discovery-Phase-2 §9.4 Variante A).
+# Eager warmup with 3s timeout; failure logs a warning and continues — extendedAgentCard
+# graceful-degrades until lazy-retry succeeds.
+@app.on_event("startup")
+async def warm_moltguard_discovery_cache():
+    await _moltguard_warm_cache()
+
+
 
 # --- Base Blockchain Anchor ---
 from web3 import Web3
@@ -3314,100 +3329,55 @@ async def extended_agent_card(
     request: Request,
     auth: dict = Depends(verify_api_key_or_did),
 ):
-    """A2A v1.0 ExtendedAgentCard. Returns public card + paid skills + x402 pricing + moltguard details."""
+    """
+    A2A v1.0 ExtendedAgentCard.
 
-    # Load public card from static file (cached on first read)
+    Returns the public agent card extended with:
+    - The platform's own paid skills (endorsement)
+    - MoltGuard sub-API discovery surface — skill + extensions built at request time
+      from the live MoltGuard OpenAPI spec (cached 1h, see app/moltguard_discovery.py).
+      Graceful-degrades to public-card-only if MoltGuard is unreachable AND cache empty.
+    """
+
     public_card = _load_public_agent_card()
 
-    # Extended skills
-    extended_skills = [
-        {
-            "id": "endorsement",
-            "name": "Trust Endorsement",
-            "description": "Create a trust edge between two DIDs (signed endorsement). Free for authenticated agents.",
-            "tags": ["endorsement", "trust", "graph", "delegation"],
-            "examples": [
-                "Endorse did:moltrust:abc123 for skill data-analysis",
-                "Issue a trust edge with confidence score 0.8"
-            ],
-            "inputModes": ["text", "data"],
-            "outputModes": ["data"]
-        },
-        {
-            "id": "moltguard-market-check",
-            "name": "Prediction Market Integrity Check",
-            "description": "Check Polymarket/Kalshi market for outcome anomalies, oracle manipulation patterns, and statistical irregularities. Paid via x402 ($0.05 USDC).",
-            "tags": ["moltguard", "prediction-market", "polymarket", "kalshi", "market-integrity"],
-            "examples": [
-                "Check market 0xabc... for anomaly indicators",
-                "Verify oracle integrity before placing trade"
-            ],
-            "inputModes": ["text"],
-            "outputModes": ["data"]
-        },
-        {
-            "id": "moltguard-events-feed",
-            "name": "Anomaly Event Feed",
-            "description": "Real-time stream of detected market integrity anomalies and behavioral red flags. Paid via x402 ($0.05 per poll).",
-            "tags": ["moltguard", "events", "anomaly", "feed", "monitoring"],
-            "examples": [
-                "Subscribe to anomaly events from MoltGuard surveillance",
-                "Poll for new market integrity flags"
-            ],
-            "inputModes": ["text"],
-            "outputModes": ["data"]
-        },
-        {
-            "id": "credential-issue",
-            "name": "Verifiable Credential Issuance",
-            "description": "Issue W3C Verifiable Credentials with AAE delegation envelopes. Premium endpoint requiring authentication.",
-            "tags": ["vc", "credential", "issuance", "aae", "premium"],
-            "examples": [
-                "Issue an AAE credential for agent did:moltrust:abc123 with skill scope",
-                "Generate signed delegation envelope for sub-agent"
-            ],
-            "inputModes": ["text", "data"],
-            "outputModes": ["data"]
-        }
-    ]
-
-    # New extensions
-    x402_pricing_ext = {
-        "uri": "https://moltrust.ch/extensions/x402-pricing/v1",
-        "description": "x402 micropayment pricing inventory for paid endpoints",
-        "required": False,
-        "params": {
-            "currency": "USDC",
-            "chain": "eip155:8453",
-            "endpoints": {
-                "sybil-scan": {"price": "0.10", "method": "GET", "path": "/guard/api/sybil/scan/{addr}"},
-                "agent-score": {"price": "0.05", "method": "GET", "path": "/guard/api/agent/score/{addr}"},
-                "market-check": {"price": "0.05", "method": "GET", "path": "/guard/api/market/check/{addr}"}
-            }
-        }
+    # Platform-native paid skill (lives in moltrust-api, not in MoltGuard).
+    endorsement_skill = {
+        "id": "endorsement",
+        "name": "Trust Endorsement",
+        "description": "Create a trust edge between two DIDs (signed endorsement). Free for authenticated agents.",
+        "tags": ["endorsement", "trust", "graph", "delegation"],
+        "examples": [
+            "Endorse did:moltrust:abc123 for skill data-analysis",
+            "Issue a trust edge with confidence score 0.8",
+        ],
+        "inputModes": ["text", "data"],
+        "outputModes": ["data"],
     }
 
-    moltguard_ext = {
-        "uri": "https://moltrust.ch/extensions/moltguard/v1",
-        "description": "MoltGuard surveillance and risk-scoring service capabilities",
-        "required": False,
-        "params": {
-            "service_url": "https://api.moltrust.ch/guard/",
-            "capabilities": ["sybil-detection", "market-surveillance", "wallet-risk-scoring", "anomaly-events"],
-            "data_sources": ["base-l2-onchain", "polymarket", "kalshi"],
-            "free_endpoints": ["/health", "/agent/sample", "/agent/score-free/{addr}"],
-            "rate_limits": {"free_tier": "1_per_10min", "paid_tier": "60_per_minute"}
-        }
-    }
+    # Build MoltGuard fields from the live spec (cached). None on cache-miss → graceful degrade.
+    mg_spec = await _moltguard_get_spec()
+    mg_skill = _build_moltguard_discovery_skill(mg_spec)
+    mg_x402_ext = _build_x402_pricing_extension(mg_spec)
+    mg_ext = _build_moltguard_extension(mg_spec)
 
-    # Build extended response (deep merge skills + extensions)
+    extended_skills = [endorsement_skill]
+    if mg_skill is not None:
+        extended_skills.append(mg_skill)
+
+    extensions = list(public_card.get("capabilities", {}).get("extensions", []))
+    if mg_x402_ext is not None:
+        extensions.append(mg_x402_ext)
+    if mg_ext is not None:
+        extensions.append(mg_ext)
+
     extended_card = {
         **public_card,
         "skills": public_card.get("skills", []) + extended_skills,
         "capabilities": {
             **public_card.get("capabilities", {}),
-            "extensions": public_card.get("capabilities", {}).get("extensions", []) + [x402_pricing_ext, moltguard_ext]
-        }
+            "extensions": extensions,
+        },
     }
 
     return extended_card
