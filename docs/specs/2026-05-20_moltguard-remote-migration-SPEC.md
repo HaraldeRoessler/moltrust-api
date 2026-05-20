@@ -1,7 +1,7 @@
 # Spec — moltguard-Repo nach GitHub bringen (MoltyCel/moltguard, §11.1)
 
 **Status:** ENTWURF — Lars-Freigabe vor Code.
-**§2.3-Cross-Review:** **Required für den Push-Commit selbst** — der Push exposes die gesamte Code-Historie, einschließlich Auth-/Credential-/Payment-Pfade, in einem öffentlichen Repo. Sekundärer Trigger: SPEC §9 BACKLOG-Item, das die Migration als „§11.1-Konformitätsblocker" deklariert.
+**§2.3-Cross-Review:** RESOLVED §9.7 — **Cross-Review beim ersten echten PR im neuen Repo (P8 CI-Add)**, nicht auf den Push selbst. Begründung: Push ist Datentransfer ohne Code-Änderung, die inhaltliche Sicherheit liegt im bestehenden Code, der bereits live ist und durch §3.4 Secret-Audit pre-cleared wurde. P8 etabliert den Review-Workflow + lädt CI ein in einem Commit.
 **Datum:** 2026-05-20 · **Repo:** moltrust-api (für die SPEC-Datei) · **Branch:** docs/moltguard-remote-migration-spec
 **BACKLOG-Mapping (verifiziert):** `docs/BACKLOG.md` Zeile 67-71 — „moltguard-Repo nach GitHub bringen (`MoltyCel/moltguard`, §11.1-Konformität)", Severity High, Aufwand L, Source: „MoltGuard-Discovery-Phase-1 SPEC §9.5 Drift-Forensik (PR #48)".
 
@@ -88,8 +88,8 @@ Kein Workflow-Bruch: aller bestehende Server-Workflow (`git push`/`git pull` geg
 | Konfiguration | Empfehlung | Begründung |
 |---|---|---|
 | Owner | `MoltyCel` | Konsistent mit moltrust-api, moltrust-web, moltrust-openclaw, status.moltrust.ch |
-| Visibility | **`private` initial, `public` als separate Lars-Entscheidung** nach erstem CI-Run | License ist MIT (public-kompatibel), aber private gibt Zeit für CI-Stabilisierung + optionales README-Polish bevor öffentlich. **Open Decision §9.1** |
-| LICENSE-File | Apache-2.0 hinzufügen (matches CLAUDE.md global rule für API-/Reference-Implementations) ODER MIT (matches existing `package.json.license`) | **Open Decision §9.2** — `package.json` sagt MIT, CLAUDE.md global sagt Apache-2.0 für „API / reference implementations". MoltGuard ist eher Letzteres (sub-API). Konflikt zu klären. |
+| Visibility | **`private` initial** | Lars-Entscheidung 2026-05-20 (§9.1 RESOLVED). `public`-Toggle bleibt separate Decision nach P8 (CI grün) + cooldown. |
+| LICENSE-File | **Apache-2.0** — `LICENSE` File am Repo-Root (full Apache-2.0 text + Copyright `2026 CryptoKRI GmbH`) + `package.json.license: "Apache-2.0"` + README License-Section | Lars-Entscheidung 2026-05-20 (§9.2 RESOLVED). Entspricht CLAUDE.md global rule §207-223 für „API / reference implementations". Heutiges `package.json.license: "MIT"` war initial-default ohne Reflexion (CLAUDE.md global rule datiert 2026-03-26, moltguard-init `aab5184` datiert 2026-03-10 — Rule kam *nach* moltguard-init, daher kein Verstoß bisher). |
 | `.gitignore`-Erweiterung | + `*.bak`, `*.bak-*`, `.attic/`, `*.log`, `coverage/`, `.vitest-cache/` | Heute deckt nur `node_modules/`, `dist/`, `.env`, `*.log`. `.bak`-Hygiene fehlt vollständig (siehe §3.1). |
 | README-Stand | Vor Push 5-Minuten-Polish — `## Build & Run`-Section ergänzen (`npm i`, `npm run build`, `npm start`, env-vars), `## Tests` (`npm test` → vitest), Repo-URL-Link, Apache/MIT-Marker | Heute README hat nur Endpoint-Tabelle, keine Dev-Setup-Hinweise. |
 | Branch-Protection | bei `main`: require PR, require status-check `ci/build` (sobald CI da), 0 required reviewers (Single-Maintainer, siehe §3.6) | Niedrige Friktion, aber blockiert direct-pushs auf main |
@@ -214,7 +214,7 @@ Keine. MoltGuard-Service läuft unverändert weiter — die Migration ändert nu
 |---|---|---|---|
 | **P1 (diese SPEC)** | Architektur-Briefing, kein Code | — | Nein |
 | **P2** Working-Tree-Triage | 8 audit-sync-Commits (modified) + 3 audit-sync (untracked live) + 11 .bak-Files in `.attic/`. Pre/post `git status` = clean working tree. | Niedrig — analog zu Discovery-P2.2 `events.ts`-Operation, bewährter Pfad. | Nein |
-| **P3** Repo-Setup-Files | LICENSE-File (Apache-2.0 oder MIT, §9.2), erweiterter `.gitignore`, README-Polish. Commit als „chore: prep repo for github-migration". | Niedrig | Nein |
+| **P3** Repo-Setup-Files | **(a)** `LICENSE` File am Root mit voll-Apache-2.0-Text + Copyright `2026 CryptoKRI GmbH, Zurich (MolTrust)` · **(b)** `package.json.license` von `"MIT"` → `"Apache-2.0"` · **(c)** README ergänzen: Build/Run/Test-Section + License-Section („Licensed under Apache-2.0 — see LICENSE") · **(d)** `.gitignore` erweitern (siehe §3.3-Tabelle). Ein Commit `chore: prep repo for github-migration (LICENSE + .gitignore + README)`. | Niedrig | Nein |
 | **P4** Branch-Rename | `git branch -m master main`. Lokal nur. | Trivial | Nein |
 | **P5** Final Secret-Audit | Re-run §3.4-Scan auf den FINALEN Stand (nach P2+P3). Bei jedem unerwarteten Hit: STOP. | Mittel — wenn unentdeckter Secret durchrutscht und auf GitHub landet, force-cleanup teuer (BFG, GitHub-Cache-Invalidierung, Force-Push, Konsumenten-Re-Clone). | — |
 | **P6** GitHub-Repo erstellen | `gh repo create MoltyCel/moltguard --private --license=apache-2.0 --description="..."`. Branch-Protection: require PR, require ci/build. | Niedrig | Nein |
@@ -254,16 +254,16 @@ GitHub's repo-deletion **purgiert auch den public cache** für private repos sof
 
 ## 9. Open Decisions (für Lars vor P2-Start zu klären)
 
-- **9.1 Visibility:** `private` initial (Vorschlag) vs `public` sofort. Trade-off:
-  - `private`: Zeit für CI-Stabilisierung + erstes Polish, kein Reputations-Risiko bei kleinen Issues, weniger Drive-by-Issues.
-  - `public`: passt zur Open-Source-Positionierung von MolTrust (moltrust-api ist public), maximale Discoverability, externe Beiträge möglich.
-  - Empfehlung: `private` initial, public-Toggle nach P8 (CI grün) + 1-Woche-Cooldown.
+- **9.1 Visibility — RESOLVED 2026-05-20: `private` initial.**
+  - Trade-off-Analyse: `private` gibt CI-Stabilisierung-Zeit + Polish-Window ohne Reputations-Risiko; `public` würde Open-Source-Positionierung + Discoverability maximieren.
+  - Lars-Entscheidung: `private` initial.
+  - Konsequenz: public-Toggle (P9) bleibt als **separate Lars-Entscheidung** nach P8 (CI grün); sequenziert mit short cooldown.
 
-- **9.2 License-Konflikt: `package.json.license: MIT` vs CLAUDE.md global rule „Apache-2.0 für API/Reference-Implementations":**
-  - MoltGuard ist sub-API (Reference-Implementation-Charakter): **CLAUDE.md sagt Apache-2.0**.
-  - `package.json` sagt MIT seit v1.0.0 (vermutlich initial-default ohne Reflexion).
-  - Empfehlung: Apache-2.0 für moltguard (CLAUDE.md folgen), `package.json.license` updaten auf `Apache-2.0`. Falls Konsumenten existieren die MIT erwarten: dokumentieren (sollte hier nicht der Fall sein).
-  - Alternative: bei MIT bleiben, CLAUDE.md-global-rule durch Audit-Eintrag ausnahmen. Inkohärenter, aber kein technischer Blocker.
+- **9.2 License — RESOLVED 2026-05-20: Apache-2.0.**
+  - Konkrete Source der Rule: `~/.claude/CLAUDE.md` §207-223 („Licensing — mandatory for all repos and packages"), Zeile 213: „API / reference implementations: **Apache 2.0**". CLAUDE.md datiert „Last updated: 2026-03-26".
+  - MoltGuard-Klassifikation: API + Reference-Implementation (sub-API von api.moltrust.ch, eigenständiger Hono-Service, hand-curated OpenAPI als Reference-Implementation für die x402-pricing-Konvention). **Kein** npm-Package (nicht published).
+  - Heutige `package.json.license: "MIT"`-Eintrag stammt aus moltguard-init `aab5184` (2026-03-10) — initial-default ohne Reflexion, war zu dem Zeitpunkt nicht gegen die CLAUDE.md-Rule (datiert 2026-03-26, also später). Kein historischer Verstoß, aber ab jetzt anzugleichen.
+  - Konkrete Implementation in P3 (siehe §6-Tabelle Update): (a) `LICENSE` File mit Apache-2.0-Volltext + Copyright `2026 CryptoKRI GmbH, Zurich (MolTrust)`; (b) `package.json.license` Update auf `"Apache-2.0"`; (c) README License-Section. **Alles in einem Commit innerhalb dieses Migrations-Sprints**, nicht separater PR (Lars-Entscheidung 2026-05-20).
 
 - **9.3 README-Polish-Tiefe:** Minimal (Build + Run-Sektion ergänzen) oder Full (Architecture-Diagram, Cluster-Übersicht, Cross-Repo-Links zu moltrust-api/-web)?
   - Empfehlung: Minimal in diesem Sprint, Full-README als separate `chore(readme)`-PR nach Migration. Niedrige Friktion.
@@ -277,12 +277,12 @@ GitHub's repo-deletion **purgiert auch den public cache** für private repos sof
 - **9.6 Working-Tree-Triage Edge-Case: was wenn ein modified-file (z.B. `src/services/market.ts`) bei Diff-Review Verdacht erweckt (z.B. debug-prints, hartcodierte test-Values)?**
   - Empfehlung: pro File einzeln entscheiden im P2-Schritt. Default `audit-sync`; bei Auffälligkeit eskalieren zu Lars (kein eigenmächtiges Discard, weil das Live-Verhalten am dist/ hängt).
 
-- **9.7 §2.3 Cross-Review-Timing für diese Migration:** auf welcher Phase?
+- **9.7 §2.3 Cross-Review-Timing für diese Migration — RESOLVED 2026-05-20: beim ersten echten PR im neuen Repo (P8 CI-Add).**
   - Diese SPEC selbst hat keinen Code-Pfad — Skip für SPEC.
-  - P2 (Triage-Commits) ändert keinen Live-Code, nur git-state — Skip empfohlen.
-  - P3 (Setup-Files) berührt keinen Code — Skip.
-  - **P7 Push:** macht alle bisherigen Auth-/Credential-/Payment-Pfade öffentlich (oder GitHub-cloud-private). Trotz vorigem Secret-Audit: ein letzter Security-Pass auf den Push-Diff (`gh repo view` post-push erlaubt full-tree-review) wäre die maximale Vorsicht.
-  - Empfehlung: §2.3 Cross-Review **auf den ersten echten PR im neuen Repo (P8 CI-Add)** statt auf Push selbst — der Push ist ja nur Datentransfer, die inhaltliche Sicherheit liegt im bestehenden Code, der bereits live ist.
+  - P2 (Triage-Commits) ändert keinen Live-Code, nur git-state — Skip.
+  - P3 (Setup-Files: LICENSE + .gitignore + README + package.json.license) berührt keinen funktionalen Code — Skip.
+  - P7 Push ist Datentransfer ohne Code-Änderung; die inhaltliche Sicherheit liegt im bestehenden Code, der bereits live ist und durch §3.4 Secret-Audit pre-cleared wurde — Skip.
+  - **P8 CI-Add-PR:** erster echter PR auf dem neuen Repo, etabliert den Review-Workflow + lädt CI ein. Cross-Review hier ist sowohl **maximale Lessson** als auch **review-workflow-Etablierung** in einem. `ai_review.py --mode security` auf den `.github/workflows/ci.yml`-Diff (winzig, niedrige Token-Last) bestätigt: keine secrets in CI-Config, keine ungewollten Permissions.
 
 ## Appendix A — Heutige moltguard-Repo-State (verifiziert 2026-05-20)
 
