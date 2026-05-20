@@ -13,15 +13,16 @@ Repo-spezifische Instruktionen. Voller operativer Rahmen: `docs/WORKFLOW.md` (in
 
 ## Discovery-Checklist (HART — nichts gilt als "fertig" bevor entdeckbar)
 
-Nach jeder neuen Seite, jedem neuen Endpoint, jedem neuen Publikations-Artefakt:
+Nach jedem neuen Endpoint, jedem neuen Skill, jeder neuen API-Capability:
 
-- [ ] `sitemap.xml` aktualisiert (URL + realistisches `lastmod` aus git-Commit-Stand der Datei, nicht heutiges Datum)
-- [ ] `llms.txt` aktualisiert (Eintrag in passendem Block)
-- [ ] Bei neuen Endpoints: Agent-Card / `.well-known/` und OpenAPI-Contract aktualisiert
-- [ ] Sitemap deployt (Phase-A/B, `post-sha == repo-sha`, Live-curl-Probe)
-- [ ] GSC-Sitemap-Re-Submit angestoßen: <https://search.google.com/search-console/sitemaps?resource_id=https%3A%2F%2Fmoltrust.ch%2F> (eingeloggt als `clipperati2015@gmail.com`)
-- [ ] `noindex,nofollow` respektieren — Seiten mit diesem Meta **nicht** in Sitemap aufnehmen
+- [ ] **Gate:** Ist der Endpoint internal-only / admin-only (nicht für externe Konsumenten-Agents gedacht)? Wenn ja: **nicht** in Agent-Card / öffentlicher OpenAPI-Spec eintragen, restliche Discovery-Schritte überspringen — internal-Entscheidung in `docs/BACKLOG.md` oder Audit-Eintrag dokumentieren.
+- [ ] Agent-Card (`/.well-known/agent-card.json`) — neuer Skill / Capability eingetragen, A2A v1.0-konform
+- [ ] Falls authentifizierte Erweiterung: Extended Agent Card (`/extendedAgentCard`) gepflegt
+- [ ] OpenAPI-Contract (`/docs`-Spec) — Pfad, Schema, Beispiele konsistent
+- [ ] `api.moltrust.ch/llms.txt` — Endpoint-Referenz für Agent-Konsumenten aktualisiert
+- [ ] Weitere `.well-known/`-Surfaces (`agent-registration.json` ERC-8004, `jwks.json`, …) falls Auswirkung — konsistent halten
+- [ ] **Cross-repo:** Falls aus dem Endpoint eine HTML-Seite unter `moltrust.ch` entsteht (Marketing-Landing, Dev-Docs, Blog), Discovery-Schritte parallel im `MoltyCel/moltrust-web` Repo nachziehen (dort: `sitemap.xml` + GSC-Re-Submit, siehe `CLAUDE.md` dort).
 
-**Begründung:** „Entdeckbarkeit = Definition of Done" — Lesson aus GROUP-5-Nachzug Mai 2026: 5 Seiten waren live, aber wochenlang nicht in Sitemap → für Crawler unsichtbar trotz vorhandenem Inhalt.
+**Begründung:** „Entdeckbarkeit = Definition of Done" — Lesson aus GROUP-5-Nachzug Mai 2026 (`MoltyCel/moltrust-web`): 5 Seiten waren live, aber wochenlang nicht in Sitemap → für Crawler unsichtbar trotz vorhandenem Inhalt. Analog für die API: ein Endpoint, der nicht in Agent-Card / OpenAPI / `llms.txt` referenziert ist, wird von Verbraucher-Agents nicht gefunden — auch bei HTTP-200.
 
 Volltext + Begriffsdefinitionen: `docs/WORKFLOW.md` §11.
