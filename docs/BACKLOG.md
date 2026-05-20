@@ -63,6 +63,14 @@
 - **Source:** Konversation 12.05.26 (während CONFORMANCE-Drift-Fix)
 - **Details:** 9 modified + 14 untracked Files inkl. mehrerer .bak-Files und neuer Routen (events.ts, wallet.ts, aeoess-verify.ts). Separate Triage-Session analog zu moltstack PR #18. master-branch (nicht main).
 
+### moltguard-Repo nach GitHub bringen (`MoltyCel/moltguard`, §11.1-Konformität)
+- **Status:** Open
+- **Aufwand:** L
+- **Added:** 2026-05-20
+- **Source:** MoltGuard-Discovery-Phase-1 SPEC §9.5 Drift-Forensik (`/guard/events/feed`-Pricing-Diskrepanz, PR #48)
+- **Sequenzierung:** **NACH** MoltGuard-Discovery-P2 (OpenAPI-Generierung). Vorarbeit (Tree-Triage) hängt am bestehenden Item oben.
+- **Details:** moltguard ist heute **server-local-only** (`~/moltguard/.git`, keine `origin`-Remote). Konsequenz: §11.1 `post-sha == repo-sha` kann **strukturell nicht** erfüllt werden, weil keine externe Wahrheitsquelle existiert; Code-Review pro Change ist nicht möglich (kein PR-Workflow); Drift-Forensik wie heute (§9.5-Befund) bleibt aufwendig (SSH-only). Erste sichtbare Folge: zwei Pricing-Drift-Fälle (`/guard/events/feed` und `/guard/api/market/feed`-Doppelpfad), die ein PR-Review früher gefangen hätte. **Scope der Remote-Migration:** (1) Working-Tree-Triage abschließen (siehe Item oben), (2) `MoltyCel/moltguard` Repo anlegen (Apache-2.0 Lizenz, README, CI-Skeleton), (3) `git push -u origin master` (oder Umbenennung master→main), (4) Branch-Protection, (5) erstes `feature/openapi`-PR aus P2-Implementation als Lackmus-Test. **Geplante Reihenfolge in der Praxis:** MoltGuard-Discovery-P2 wird auf dem heutigen server-local-Repo gefahren (kein Blocker für die OpenAPI-Generierung selbst), die Remote-Migration ist eigener Sprint danach. Aber: jede weitere Iteration ohne Remote verlängert den Cleanup-Aufwand.
+
 ### WORKFLOW.md Bootstrap-Items (Scripts)
 - **Status:** Open
 - **Aufwand:** L (gesamt, sequenziell)
@@ -139,6 +147,14 @@
 - **Added:** 2026-05-15
 - **Source:** moltrust-web Phase-1-Analyse v4 (UNC-11 / V-7), API-Sprint-Übergabe §8
 - **Details:** CAEP-Profil ist live (`@moltrust/agent-firewall@1.0.0`, PROFILE.md sauber, 4 Endpoints live), aber **nicht** als sechste Extension in `agent-card.json` deklariert. Aktuell dort nur fünf: trust-score, aae, erc8004, x402-payment, discovery-surfaces. CAEP-Extension-Eintrag ergänzen mit korrektem Schema-URI und Endpoint-Liste. Reine Doku-Auslieferungs-Asymmetrie, kein Funktions-Bug. Beim Gelegenheits-Cleanup auch den Doku-Drift in `agent-firewall` PROFILE.md angleichen: nennt CAEP-Default-Limit 100, Server-Code nutzt 50 — Server-Wert übernehmen, PROFILE.md korrigieren.
+
+### `x402-prices.ts` `/api/market/feed`-Doppelpfad konsolidieren (moltguard)
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-20
+- **Source:** MoltGuard-Discovery-Phase-1 SPEC §9.5 Drift-Forensik (PR #48)
+- **Sequenzierung:** Wird bei **MoltGuard-Discovery-P2** (OpenAPI-Generierung aus `x402-prices.ts`) automatisch greifbar, weil die Spec-Generierung gegen einen konsistenten Pricing-Datensatz laufen muss. Eigenständiger Fix vorher möglich, aber durch P2 ohnehin erzwungen.
+- **Details:** `~/moltguard/src/middleware/x402-prices.ts` enthält `/api/market/feed` in BEIDEN Listen — `X402_PRICES` (Line 10, $0.10) **und** `X402_FREE_PATHS` (Line 50). Middleware-Reihenfolge in `x402.ts` (`isFree()` zuerst → `getPrice()` danach) bedeutet: **FREE gewinnt** → Live-Verhalten ist free (200 OK ohne Payment, verifiziert 2026-05-20). Discovery-Inventory (`/guard/api/info`) listet es trotzdem als paid → klassische Drift-Klasse. **Entscheidung Lars (2026-05-20):** free legitimieren, d.h. Eintrag aus `X402_PRICES` streichen — Live-Konsumenten verlassen sich seit Monaten auf das free-Verhalten. Code-Change ist 1 Zeile in x402-prices.ts. **Voraussetzung für Code-Change:** moltguard-Remote-Migration (siehe `### moltguard-Repo nach GitHub bringen` unter High) ODER server-local Commit mit explizitem Audit-Eintrag.
 
 ### .well-known-Mirror-Generierung + Deprecation-Header (Phase-1-Analyse §8 Punkt 4)
 - **Status:** Open
