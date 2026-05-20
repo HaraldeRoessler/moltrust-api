@@ -253,8 +253,37 @@ OpenAPI: <https://api.moltrust.ch/guard/openapi.json> · Self-doc: <https://api.
   - (c) je 1 Cluster pro Route-File (8 zusätzliche Cluster, gesamt 18) — wird im agent-card-Skill-Array unhandlich.
   - Empfehlung: (b).
 - **9.3 OpenAPI `/guard/openapi.json` URL-Stabilität.** Versionierung? `/guard/openapi.json` vs `/guard/v1/openapi.json`. Tendenz: heute `/guard/openapi.json` (analog zu FastAPI's `/openapi.json`), Version 1.5.x im `info.version`-Feld; Major-Bumps via separate Route nur falls je nötig.
-- **9.4 `extendedAgentCard`-Konsequenz.** Heute deklariert die `extendedAgentCard` (auth-gated) laut `llms.txt` „9 skills + 7 extensions including x402 pricing inventory and MoltGuard capabilities". Mit dem neuen `moltguard/v1`-Extension in der public agent-card ist die Frage: bleibt die x402-Pricing-Inventory in der extendedAgentCard, oder wandert sie in `/guard/openapi.json`'s `x-moltrust-pricing`-Felder? Tendenz: Pricing ist **public knowledge** → in OpenAPI + öffentliche Extension. extendedAgentCard kann auf öffentliche Extension verweisen statt zu duplizieren. Konkrete Doku-Drift-Korrektur ist Subscope von P3.
-- **9.5 `/events/feed` Pricing-Lücke.** Memory + Outreach-Doku nennen `/events/feed` als $0.05-paid, aber `x402-prices.ts` listet nur `/api/market/feed`. Live: `/guard/events/feed` antwortet 200 GET ohne Payment-Header. **Pre-P2-TODO:** Mit MoltGuard-Owner klären — fehlt das Pricing in der Config, oder ist `/events/feed` doch free? OpenAPI-Spec muss dieser Realität entsprechen.
+- **9.4 `extendedAgentCard`-Builder: weg von Hardcode, hin zu Build-Time-Lookup *(verschärft 2026-05-20)*.** Heute deklariert die `extendedAgentCard` (auth-gated) laut `llms.txt` „9 skills + 7 extensions including x402 pricing inventory and MoltGuard capabilities". Diese Inventory wird in `app/main.py` `extended_agent_card`-Funktion **hardcodiert** zusammengebaut — sowohl die `x402_pricing_ext.params.endpoints`-Liste (Lines 3382-3389 nach PR #49) als auch die Skill-Beschreibungen im `skills[]`-Array (Lines ~3349ff). Zwei Drift-Belege aus heute (2026-05-20):
+    - **Beleg 1 (heute gefixt):** Pricing-Inventory führte fälschlich `events-feed: $0.05` — PR #49, siehe §9.5.
+    - **Beleg 2 (noch offen):** Skill-Description `moltguard-events-feed` behauptet weiterhin „Paid via x402 ($0.05 per poll)" obwohl Endpoint live free ist — siehe §9.5.
+
+    **Verschärfung der Empfehlung:** P3 darf **nicht** den heutigen Hardcode-Pfad einfach mit korrigierten Werten neu schreiben. P3 muss die Architektur ändern, sodass der Builder MoltGuard-bezogene Felder zur **Build-Time** aus einer einzigen MoltGuard-Wahrheitsquelle holt:
+    - **Variante A (preferred):** Build-Time-Fetch von `https://api.moltrust.ch/guard/api/info` während des FastAPI-startups (lazy-cache, retry-on-fail, deploy-blockierend wenn unavailable). Vorteil: keine Code-Coupling zwischen Repos; MoltGuard behält eigenen Deploy-Zyklus. Sobald `/guard/openapi.json` aus P2 existiert, **stattdessen daraus** ziehen (Maschinen-Spec ist definitionsgemäß die executable Source of Truth).
+    - **Variante B:** Direkter `x402-prices.ts`-Import via npm-Build-Step oder JSON-Export beim Deploy. Vorteil: deterministisch in CI, keine Network-Dependency. Nachteil: Cross-Repo-Build-Coupling — heute strukturell unmöglich, weil moltguard kein Remote hat (siehe BACKLOG-Item „moltguard-Repo nach GitHub bringen", PR #49). Wird langfristige Option, sobald die Remote-Migration durch ist.
+    - **Variante C (vermeiden):** weiter Hardcode, aber mit Lint-Regel die jede Hardcode-Pricing-Zeile blockiert. Reibung ohne Strukturschutz; löst nur Beleg 1, nicht Beleg 2 (Skill-Descriptions sind Freitext, schwerer per Regex zu fangen).
+
+    **Konkretes Akzeptanzkriterium für den P3-PR:** nach dem P3-Patch darf `grep -nE "events-feed|/guard/api/|/guard/events" app/main.py` **keinen** Pricing-, Path- oder Description-String als Hardcode mehr finden — alle MoltGuard-bezogenen Felder im `extended_agent_card`-Body kommen aus dem Build-Time-Lookup (Variante A oder B). Drittes Drift-Ereignis derselben Klasse wird damit strukturell unmöglich.
+
+- **9.5 `/events/feed` Pricing — RESOLVED (PR #49) + zweiter Drift-Punkt offen *(nachgeschärft 2026-05-20)*.**
+
+    **Autoritative Quelle:** `moltguard/src/middleware/x402-prices.ts`. Da `/events/feed` weder in `X402_PRICES` noch in `X402_FREE_PATHS` einen Eintrag hat, gilt der Middleware-Default in `x402.ts` (`if (price === null) return next();`) → **free**. Live-Verifikation 2026-05-20: `GET https://api.moltrust.ch/guard/events/feed` → 200 OK, Content-Length 31415, kein 402, kein x402-Header.
+
+    **Erste Drift-Quelle (gefixt):** `moltrust-api/app/main.py:3386` (extendedAgentCard `x402_pricing_ext.params.endpoints`) hardcodete `events-feed: $0.05`. Entstanden in Commit `67b8789` (2026-05-10, „feat(a2a): add ExtendedAgentCard endpoint per A2A v1.0 spec") als plausibler Plan-Drift (Pricing wurde geplant, im moltguard-Code nie umgesetzt, Discovery-Eintrag blieb hängen). **Entfernt per PR #49** (merge `321fe37`), live deployt 2026-05-20 13:48 UTC, post-deploy-Verifikation: `x402-pricing/v1.params.endpoints` enthält jetzt exakt `{sybil-scan, agent-score, market-check}`.
+
+    **Memory-Zitat-Korrektur:** Die ursprüngliche SPEC formulierte „Memory + Outreach-Doku nennen `/events/feed` als $0.05-paid" — das war ungenau. Das `MEMORY.md` nennt nur „market feed $0.10" im MoltGuard-Eintrag, **kein** events-feed. Die einzigen Quellen, die jemals $0.05 für events-feed behauptet haben, sind (a) `app/main.py:3386` (heute gefixt) und (b) ein zweiter, bisher unbeachteter Drift-Punkt:
+
+    **Zweiter Drift-Punkt — noch offen:** `app/main.py` Lines ~3349ff enthält im `skills[]`-Array eine A2A-Skill-Deklaration:
+    ```python
+    {
+      "id": "moltguard-events-feed",
+      "name": "Anomaly Event Feed",
+      "description": "Real-time stream of detected market integrity anomalies and behavioral red flags. Paid via x402 ($0.05 per poll).",
+      ...
+    }
+    ```
+    Diese Skill-Beschreibung wurde von PR #49 nicht angefasst (PR-Scope war „Pricing-Inventory", nicht „skill descriptions" — bewusste Scope-Treue), behauptet aber dieselbe falsche $0.05-Aussage. Sichtbar in der heutigen Post-Deploy-Verifikation der `extendedAgentCard`-Response.
+
+    **Fix-Plan-Empfehlung:** mitnehmen in **P3** (Agent-Card-Builder-Patch), nicht als eigener Vor-PR. Begründung: P3 fasst ohnehin den `extended_agent_card`-Builder + Skills-Generierung an, und §9.4 fordert eine Build-Time-Lookup-Architektur, die die Drift **strukturell** ausschließt. Ein 1-Zeilen-Fix in der description-String wäre technisch trivial, würde aber den Reviewer-Aufwand fragmentieren und den Falschanreiz schaffen, in P3 wieder neue Hardcode-Strings zu schreiben statt die Architektur umzustellen. **Einziger Fall für einen Vor-PR:** falls P3 sich um > 2 Wochen verzögert — dann Medium-BACKLOG-Item anlegen und Vor-PR ziehen, damit die `extendedAgentCard`-Response konsistent wird.
 - **9.6 §2.3 Cross-Review jetzt oder bei P2.** Diese SPEC selbst hat keinen Auth-/Credential-Pfad. P2 (OpenAPI-Implementation) hat ebenfalls keinen — aber P3 (agent-card-Builder-Patch) berührt die signierte agent-card-Generierungslogik. Empfehlung: §2.3-Cross-Review **bei P3-PR**, nicht für diese SPEC und nicht für P2.
 
 ## Appendix A — Vollständige Endpoint-Inventur (live verifiziert 2026-05-20)
