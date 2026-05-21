@@ -6271,6 +6271,80 @@ async def dashboard_x402(request: Request):
     }
 
 
+@app.get("/admin/dashboard/discovery")
+async def dashboard_discovery(request: Request):
+    """Discovery-Tracking dashboard — latest snapshot + 7-day history + baseline.
+
+    Reads discovery_snapshots (populated by scripts/discovery_snapshot.py cron).
+    Returns latest + previous-day + baseline rows; the frontend computes deltas.
+    Admin-only endpoint — intentionally NOT in agent-card/OpenAPI/llms.txt
+    (Discovery-Checklist Gate: internal-only).
+    """
+    _get_admin_session(request)
+    if not db_pool:
+        raise HTTPException(503, "Database unavailable")
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT snapshot_at, generated_at, payload, source_run_status
+            FROM discovery_snapshots
+            ORDER BY snapshot_at DESC LIMIT 7
+        """)
+        baseline_row = await conn.fetchrow("""
+            SELECT snapshot_at, payload FROM discovery_snapshots
+            ORDER BY snapshot_at ASC LIMIT 1
+        """)
+
+    def _payload(v):
+        return v if isinstance(v, dict) else json.loads(v)
+
+    def _bot_total(p):
+        return sum(sum(c.values()) for c in p.get("bot_hits", {}).values())
+
+    if not rows:
+        return {"latest": None, "previous": None, "baseline": None, "history": []}
+
+    latest = rows[0]
+    latest_p = _payload(latest["payload"])
+    result = {
+        "latest": {
+            "snapshot_at": latest["snapshot_at"].isoformat(),
+            "generated_at": latest["generated_at"].isoformat(),
+            "source_run_status": latest["source_run_status"],
+            "self_probes": latest_p.get("self_probes", {}),
+            "bot_hits": latest_p.get("bot_hits", {}),
+            "github": latest_p.get("github", {}),
+            "gsc": latest_p.get("gsc", {}),
+            "errors": latest_p.get("errors", []),
+        },
+        "previous": None,
+        "baseline": None,
+        "history": [
+            {
+                "snapshot_at": r["snapshot_at"].isoformat(),
+                "status": r["source_run_status"],
+                "bot_hits_total": _bot_total(_payload(r["payload"])),
+            }
+            for r in reversed(rows)
+        ],
+    }
+    if len(rows) > 1:
+        prev_p = _payload(rows[1]["payload"])
+        result["previous"] = {
+            "snapshot_at": rows[1]["snapshot_at"].isoformat(),
+            "bot_hits": prev_p.get("bot_hits", {}),
+            "github": prev_p.get("github", {}),
+        }
+    if baseline_row:
+        base_p = _payload(baseline_row["payload"])
+        result["baseline"] = {
+            "snapshot_at": baseline_row["snapshot_at"].isoformat(),
+            "bot_hits": base_p.get("bot_hits", {}),
+            "github": base_p.get("github", {}),
+        }
+    return result
+
+
 KNOWN_CALLERS = {
     # Cloud / CDN
     "103.": "Shopee", "47.": "Alibaba", "34.": "Google Cloud",
