@@ -614,6 +614,15 @@ async def credit_middleware(request: Request, call_next):
                          "detail": "Credit deduction failed unexpectedly."},
             )
 
+        if deduct_failed:
+            return JSONResponse(
+                status_code=402,
+                content={
+                    "error": "insufficient_credits",
+                    "detail": "Not enough credits for this call.",
+                },
+            )
+
     return response
 
 # --- Validation Helpers ---
