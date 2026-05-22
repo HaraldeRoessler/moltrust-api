@@ -1,6 +1,6 @@
 # BACKLOG.md — MolTrust Open Items
 
-**Status:** V1.6, lebendiges Dokument
+**Status:** V1.7, lebendiges Dokument
 **Letzte Aktualisierung:** 2026-05-22
 **Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol)
 **Definiert durch:** WORKFLOW.md Sektion 1.7
@@ -432,6 +432,13 @@
 - **Source:** Test-Key-Incident Phase-2-SPEC (`docs/specs/2026-05-22_test-key-history-scrub-SPEC.md`, §1 / §10.3 Pkt 5)
 - **Details:** Der Test-Key-History-Scrub-Sprint hat für moltrust-api **Option C** gewählt — kein History-Rewrite, nur Working-Tree-Redact von `pentest.sh`. Falls je ein echter Full-History-Rewrite von moltrust-api erwogen wird, ist dieser Scan **zwingende Vorbedingung**: `mt_test_key_2026` steckt in 9 History-Dateien, und Commit `e51c05a` (`fix(security): CRITICAL-1,2,5 — hardcoded key … CLI private key`) deutet auf **weitere historische Secrets**. Vor einem Rewrite die Full History mit gitleaks/trufflehog scannen und **alle** Funde in **einem** `git-filter-repo --replace-text`-Lauf entfernen — nicht nur das `mt_test_key_2026`-Pattern. Ohne diesen Scan ließe ein Rewrite andere Alt-Secrets in der History zurück und müsste später wiederholt werden.
 
+### compute_phase2_score Härtung (depth-Doku, Timeout-Bound, Exception-Handling)
+- **Status:** Open
+- **Aufwand:** M
+- **Added:** 2026-05-22
+- **Source:** §2.3 Cross-Review `s121-a2a-card-fix` (2026-05-22), Punkte #3/#4 — bewusst out-of-scope des Sprint-1.2.1-Handler-Fix
+- **Details:** Die geteilte Funktion `compute_phase2_score` (`app/swarm/trust_score.py`) wird von `/skill/trust-score/{did}` **und** seit Sprint 1.2.1 auch von `/a2a/agent-card/{did}` aufgerufen — beide öffentliche, unauth GET-Endpoints. Härtung des Graph-Traversals: (1) `depth`-Parameter explizit dokumentieren + harte Obergrenze für die Endorsement-Propagation; (2) Timeout-Bound auf die Berechnung; (3) Exception-Handling mit definiertem Fallback (z.B. Score 0 + Log-Error), damit ein Traversal-Fehler keinen 500 auf der öffentlichen Card-Surface erzeugt. Betrifft **beide** Endpoints zugleich → eigener Sprint, nicht im Handler-Fix mitgemacht.
+
 ---
 
 ## Deferred (Decision Required Before Activation)
@@ -486,6 +493,7 @@
 
 ## Changelog
 
+- **2026-05-22 — V1.7**: Ein Low-Item aufgenommen — `compute_phase2_score`-Härtung (depth-Doku, Timeout-Bound, Exception-Handling der geteilten Graph-Traversal-Funktion). Ausgelagert aus dem §2.3-Cross-Review `s121-a2a-card-fix` (#3/#4), out-of-scope des Sprint-1.2.1-Handler-Fix.
 - **2026-05-22 — V1.6**: Ein Medium-Item aufgenommen — Pre-push Secret-Audit-Hook, struktureller Schutz gegen die im Incident INC-2026-05-22-test-key-exposure aufgedeckte Leak-Klasse (Secret im Public-Repo). Quelle: `docs/incidents/2026-05-22_test-key-exposure.md` §9. (`**Status:**`-Zeile auf V1.6 nachgezogen — war seit V1.5 stale.)
 - **2026-05-22 — V1.5**: Ein Low-Item aufgenommen — Voll-Secret-Scan moltrust-api Full-History, als Vorbedingung für einen etwaigen späteren History-Rewrite. Ausgelagert aus dem Test-Key-Incident Phase-2-SPEC (`docs/specs/2026-05-22_test-key-history-scrub-SPEC.md`); dort Option C gewählt (kein Rewrite, nur Working-Tree-Redact von `pentest.sh`).
 - **2026-05-15 — V1.4**: API-Sprint-Übergabe aus moltrust-web Phase-1-Analyse §8 als verfolgbare Items aufgenommen, ausgelöst durch den Versionierungs-Audit am 2026-05-15 (~/moltstack/audits/2026-05-15_api-versioning.md) und die Conversion-Chat-Nachfrage zur §8-Kommunikation.
