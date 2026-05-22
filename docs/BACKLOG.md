@@ -1,6 +1,6 @@
 # BACKLOG.md — MolTrust Open Items
 
-**Status:** V1.4, lebendiges Dokument
+**Status:** V1.6, lebendiges Dokument
 **Letzte Aktualisierung:** 2026-05-22
 **Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol)
 **Definiert durch:** WORKFLOW.md Sektion 1.7
@@ -301,6 +301,14 @@
 - **Source:** PAT-Rotation 12.05.26
 - **Details:** Aktuell Pattern B (credential-helper aus env) für moltrust-protocol. Langfristig sauberer: SSH-Key für MoltyCel-Bot auf GitHub registriert, kein Token-in-env mehr nötig. Setup: neuer ed25519 für MoltyCel-personal, GitHub key + ssh config alias, dann Pattern A für alle bot-getriebenen Repos.
 
+### Pre-push Secret-Audit-Hook
+- **Status:** Open
+- **Aufwand:** M
+- **Added:** 2026-05-22
+- **Source:** Incident INC-2026-05-22-test-key-exposure (`docs/incidents/2026-05-22_test-key-exposure.md` §7.3 / §9) — struktureller Schutz gegen die im Incident aufgedeckte Leak-Klasse (Secret im Public-Repo)
+- **Priority-Begründung:** Medium — kein akuter Bug, aber der einzige strukturelle Schutz, der das ursprüngliche Leck (Key im Initial-Commit-README) **vor** der Veröffentlichung gestoppt hätte.
+- **Details:** Pre-push git-Hook für alle `MoltyCel`-Repos, der jeden Push auf bekannte Secret-Patterns scannt — `ghp_`, `sk_live_`, `whsec_`, `github_pat_`, `sk-ant-`, `mt_<32-hex>`, `AKIA`, `xoxb-` — und bei Treffer den Push mit klarer Fehlermeldung abbricht. **Installations-Vorschlag:** versioniertes `.githooks/`-Verzeichnis pro Repo + `git config core.hooksPath .githooks` — gegenüber einem globalen `~/.git/hooks` / globalem `core.hooksPath` zu bevorzugen, weil der Hook so (a) im Repo versioniert + reviewbar ist, (b) mit dem Repo mitwandert, (c) auf MolTrust-Repos beschränkt bleibt (ein globaler Hook griffe auf alle lokalen Repos und wäre nicht reproduzierbar für andere Klone/CI). Einschränkung: `core.hooksPath` ist lokale Config, muss pro Klon einmalig gesetzt werden (Setup-Zeile ins README) — und ein Pre-push-Hook ist client-seitig mit `--no-verify` umgehbar; der nicht-umgehbare Gegenpart ist ein CI-/server-seitiger Secret-Scan bzw. GitHub Secret Scanning + Push Protection, den dieses Item mit abdecken sollte. Bei Umsetzung: §7.3 der Incident-Doc von „noch anzulegen" auf den Verweis hierauf ändern.
+
 ---
 
 ## Low
@@ -478,6 +486,7 @@
 
 ## Changelog
 
+- **2026-05-22 — V1.6**: Ein Medium-Item aufgenommen — Pre-push Secret-Audit-Hook, struktureller Schutz gegen die im Incident INC-2026-05-22-test-key-exposure aufgedeckte Leak-Klasse (Secret im Public-Repo). Quelle: `docs/incidents/2026-05-22_test-key-exposure.md` §9. (`**Status:**`-Zeile auf V1.6 nachgezogen — war seit V1.5 stale.)
 - **2026-05-22 — V1.5**: Ein Low-Item aufgenommen — Voll-Secret-Scan moltrust-api Full-History, als Vorbedingung für einen etwaigen späteren History-Rewrite. Ausgelagert aus dem Test-Key-Incident Phase-2-SPEC (`docs/specs/2026-05-22_test-key-history-scrub-SPEC.md`); dort Option C gewählt (kein Rewrite, nur Working-Tree-Redact von `pentest.sh`).
 - **2026-05-15 — V1.4**: API-Sprint-Übergabe aus moltrust-web Phase-1-Analyse §8 als verfolgbare Items aufgenommen, ausgelöst durch den Versionierungs-Audit am 2026-05-15 (~/moltstack/audits/2026-05-15_api-versioning.md) und die Conversion-Chat-Nachfrage zur §8-Kommunikation.
   - **Neu High (1):** AAE ins Credential einbauen (Phase-1 UNC-07 + Lars-Entscheidung) — koordinieren mit Credit-Middleware-Idempotency-Sprint (beide Schema-Change auf /identity/register, nicht parallel).
