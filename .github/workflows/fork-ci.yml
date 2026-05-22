@@ -143,6 +143,8 @@ jobs:
           PGPASSWORD: ci-pw
         run: |
           psql -h localhost -U moltstack -d moltstack -f init_db.sql
+          # CI schema alignment: columns present on live DB but missing from init_db.sql
+          psql -h localhost -U moltstack -d moltstack -c "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS email TEXT;"
       - name: run credit middleware tests
         # These tests require a live Postgres because credit_middleware
         # connects via db_pool (asyncpg). The service container provides
