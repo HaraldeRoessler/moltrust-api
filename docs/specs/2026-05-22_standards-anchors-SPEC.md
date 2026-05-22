@@ -2,7 +2,7 @@
 
 - **Datum:** 2026-05-22
 - **Autor:** Lars Kroehl (CryptoKRI GmbH)
-- **Status:** DRAFT — wartet auf Spec-Abnahme. **Phase 1 = reine Doku, kein Code-Change.**
+- **Status:** FINAL — §9-Decisions D1–D4 RESOLVED (Abnahme 2026-05-22). PR offen → wartet auf finale Abnahme + Merge. **Phase 1 = reine Doku, kein Code-Change.**
 - **Sprint-Kontext:** Visibility-Sprint 2.4 (Western Institutional Anchors).
 - **§2.3 Cross-Review:** entfällt (deklarative Doku-Felder, kein Auth-/Credential-Pfad).
 
@@ -10,7 +10,7 @@
 
 5 Standards-Anchors maschinenlesbar in der Platform-Agent-Card referenzieren:
 **NIST AI RMF · EU AI Act · FATF (2023) · MITRE ATLAS · OWASP LLM Top 10**.
-Empfehlung §2.4: zusätzlich **Singapore IMDA MGF** (siehe §2.4) → 6 Einträge.
+Inkl. **Singapore IMDA MGF** (Entscheidung D2, §2.4) → **6 Einträge**.
 
 ---
 
@@ -30,16 +30,17 @@ ist zudem **selbst ein git-Repo** (bekannte `.git-in-webroot`-Hygiene-Notiz).
 
 **Konsequenz:** Würde Phase 2 das `moltrust-web`-Repo-File (v0.3) editieren und
 deployen, würde die Live-Card **auf v0.3 zurückgeworfen** (4 Extensions verloren,
-Versions-Downgrade). **Phase 2 darf nicht starten, bevor entschieden ist, was der
-kanonische Quell-Ort der `agent-card.json` ist.** Optionen (Lars-Entscheidung):
-- **A** — Live-v1.0-Inhalt in `MoltyCel/moltrust-web` reconcilen, dann dort die
-  Anchors ergänzen, dann deployen. Sauber, aber Reconcile-Vorsprint nötig.
-- **B** — Die Anchors direkt am kanonischen Live-Ort pflegen (webroot-git-Repo),
-  + diesen Ort als SoT formalisieren.
-- Verknüpft mit BACKLOG-Item „.well-known-Mirror-Generierung" (OD-8).
+Versions-Downgrade).
 
-Diese SPEC beschreibt das Anchor-Design *zustands-unabhängig* — die SoT-Klärung
-ist Schritt 0 der Phase-2-Ausführung.
+**Entscheidung D3 (Abnahme 2026-05-22): Variante A** — der Live-v1.0-Inhalt wird
+in `MoltyCel/moltrust-web` reconciled, dann werden dort die Anchors ergänzt, dann
+deployed. §11.1-konform (Repo = Source-of-Truth). Der Reconcile ist **Schritt 0
+der Phase 2** — detaillierter Plan in §8. *(Verworfen: Variante B — Pflege direkt
+am Live-Ort hätte §11.1 „Repo == Live" weiter unterlaufen.)* Verknüpft mit dem
+BACKLOG-Item „.well-known-Mirror-Generierung" (OD-8).
+
+Diese SPEC beschreibt das Anchor-Design *zustands-unabhängig* — der SoT-Reconcile
+ist Schritt 0 der Phase-2-Ausführung (§8).
 
 ---
 
@@ -217,17 +218,46 @@ Deckt sich mit dem Lars-Bias: nur Platform-Cards für 2.4.
 
 ## 8. Phase-2-Ausführungs-Skizze (nach Spec-Abnahme — nicht dieser Sprint)
 
-0. **SoT-Klärung** (§0.1) — Lars entscheidet A/B; ggf. Reconcile-Vorsprint.
-1. `standards-alignment/v1`-Extension in die **kanonische** `agent-card.json` einfügen (6 Frameworks).
+**Schritt 0 — SoT-Reconcile (Variante A / D3) — harte Vorbedingung:**
+- **0a.** Read-only Diff der **Live-Card v1.0** (`/var/www/html/.well-known/agent-card.json`,
+  7926 B) gegen das **Repo-File v0.3** (`moltrust-web/.well-known/agent-card.json`, 4385 B).
+- **0b.** Klären, welche Felder zwischenzeitlich **live** ergänzt wurden — voraussichtlich
+  die 4 zusätzlichen Extensions (`aae`, `erc8004`, `x402-payment`, `discovery-surfaces`),
+  der Versions-Bump v0.3 → v1.0 und Top-Level-Felder (`supportedInterfaces`,
+  `documentationUrl`, `iconUrl`); Herkunft vermutlich Sprint 1.1a u.a.
+- **0c.** Repo-File `moltrust-web/.well-known/agent-card.json` auf den **Live-v1.0-Stand**
+  bringen **plus** die `standards-alignment/v1`-Extension — beides in **einem** PR auf
+  `MoltyCel/moltrust-web`.
+- **0d.** Deploy; **Verifikation: Live-Card == Repo-File (sha256-Gleichheit)**.
+- **0e.** Jeder beim 0a-Diff entdeckte weitere Live↔Repo-Drift-Befund → BACKLOG (§10 Pkt 2).
+
+**Schritt 1 ff. — Anchors (im selben moltrust-web-PR wie 0c):**
+1. `standards-alignment/v1`-Extension mit 6 Frameworks (§2.3).
 2. Kanonische URLs verifizieren (Live-200), `mapping` für EU AI Act + NIST setzen.
 3. `llms.txt`-Standards-Block auf 6 ergänzen.
-4. Deploy gemäß SoT-Entscheidung; `post-sha == repo-sha`.
+4. Deploy; `post-sha == repo-sha`.
 5. Verifikation §6.
-6. Folge-BACKLOG: FATF-/MITRE-/OWASP-Mapping-Dokumente.
 
-## 9. Offene Abnahme-Fragen an Lars
+## 9. Entscheidungen (Abnahme 2026-05-22)
 
-1. Schema: Extension `standards-alignment/v1` (Empfehlung §2.1) — bestätigt, oder doch Top-Level `complianceAnchors`?
-2. IMDA MGF als 6. Eintrag aufnehmen (Empfehlung §2.4) — bestätigt?
-3. SoT-Klärung §0.1: Option A (Reconcile in moltrust-web) oder B (kanonisch am Live-Ort)?
-4. FATF/MITRE/OWASP-Mapping-Docs als Folge-BACKLOG-Item — bestätigt?
+- **D1 — RESOLVED:** Schema = Extension `standards-alignment/v1` in
+  `capabilities.extensions[]` (§2.1–§2.3). **Kein** custom Top-Level-Feld.
+- **D2 — RESOLVED:** Singapore IMDA MGF wird als **6. Anchor** aufgenommen (§2.4).
+- **D3 — RESOLVED:** SoT = **Variante A** — Live-v1.0 in `MoltyCel/moltrust-web`
+  reconcilen (§11.1-konform). Reconcile = Phase-2-Schritt 0 (§0.1 / §8).
+- **D4 — RESOLVED:** Die 3 fehlenden Mapping-Docs (FATF, MITRE ATLAS, OWASP LLM
+  Top 10) werden als BACKLOG-Item geführt (§10 Pkt 1), nicht in Sprint 2.4.
+
+---
+
+## 10. BACKLOG-Items (separate Anlage nach Merge dieser SPEC)
+
+1. **3 fehlende Standards-Mapping-PDFs** — FATF (2023), MITRE ATLAS, OWASP LLM
+   Top 10. Eigene inhaltliche Arbeit (Standard-für-Standard-Mapping analog zu den
+   bestehenden EU-AI-Act-/NIST-Mappings), Ablage `moltrust-web/publications/`.
+   Aufwand: **Medium**. Nicht-blockierend für 2.4 — ohne sie tragen die 3 Anchors
+   nur die kanonische `url`, kein internes `mapping`.
+2. **Weitere Live↔Repo-Drift-Befunde** — falls der SoT-Reconcile-Diff (§8 Schritt
+   0a) über die `agent-card.json` hinaus weitere server-only-Abweichungen im
+   Webroot aufdeckt, werden sie als Drift-Items nachgetragen. Platzhalter —
+   erst nach dem Reconcile-Diff konkret bezifferbar.
