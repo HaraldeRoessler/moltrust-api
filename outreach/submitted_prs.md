@@ -81,7 +81,7 @@ Last updated: 2026-03-09
 - camel-ai/agent-trust #3 ✅ (behavioral → verifiable trust)
 - zCloak-Network/ATP #2 ✅ (W3C DID interop)
 - GongRzhe/A2A-MCP-Server — SKIPPED (inactive 8 months)
-- massivescale-ai/agentic-trust-framework — WAIT (issue #2 already open)
+- massivescale-ai/agentic-trust-framework #14 ✅ (ecosystem adopter entry, 2026-05-20)
 
 ### Phase 4 (2026-03-01) — MoltGuard + Prediction Markets
 - 0xperp/awesome-prediction-markets #3 ✅ (new Integrity & Trust section)
