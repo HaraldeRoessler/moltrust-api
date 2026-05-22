@@ -94,7 +94,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio
+          pip install pytest pytest-asyncio httpx
       - name: collect tests
         # Collection imports test modules without running them. Catches
         # ImportError / SyntaxError / fixture-parse errors without
@@ -105,6 +105,62 @@ jobs:
           MOLTSTACK_DB_PW: 'ci-placeholder'
         run: |
           pytest --collect-only -q tests/ test_*.py 2>&1 | tail -40
+
+  pytest-run:
+    name: pytest (credit middleware)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: moltstack
+          POSTGRES_USER: moltstack
+          POSTGRES_PASSWORD: ci-pw
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: install requirements + pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+      - name: init test DB schema
+        # init_db.sql uses IF NOT EXISTS — idempotent, safe to run
+        # repeatedly. Uses plain text password via PGPASSWORD — safe
+        # because this runs in an ephemeral CI container.
+        env:
+          PGPASSWORD: ci-pw
+        run: |
+          psql -h localhost -U moltstack -d moltstack -f init_db.sql
+      - name: run credit middleware tests
+        # These tests require a live Postgres because credit_middleware
+        # connects via db_pool (asyncpg). The service container provides
+        # a fresh Postgres on localhost:5432.
+        # MOLTRUST_ADMIN_USERS needs a valid bcrypt hash for the format
+        # check — the placeholder below passes the regex but won't match
+        # any real password.
+        env:
+          MOLTRUST_API_KEYS: 'mt_ci_placeholder_key'
+          NONCE_SECRET: 'ci-placeholder-nonce-secret'
+          MOLTSTACK_DB_PW: 'ci-pw'
+          DB_NAME: moltstack
+          DB_HOST: localhost
+          MOLTRUST_ADMIN_USERS: 'ci-admin:admin:$2b$12$ciplaceholderhashforadminusersformatcheck'
+          MOLTRUST_ENV: 'ci'
+          CREDITS_ENABLED: 'true'
+        run: |
+          python -m pytest tests/test_credit_middleware.py -v --tb=short 2>&1
 
   ruff:
     name: ruff (informational)
