@@ -1,7 +1,7 @@
 # BACKLOG.md — MolTrust Open Items
 
 **Status:** V1.4, lebendiges Dokument
-**Letzte Aktualisierung:** 2026-05-15
+**Letzte Aktualisierung:** 2026-05-22
 **Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol)
 **Definiert durch:** WORKFLOW.md Sektion 1.7
 
@@ -417,6 +417,13 @@
 - **Source:** Side-Beobachtung 13.05.26 (PR #22 prep)
 - **Details:** Nach git branch -vv mit gone upstream: chore/smithery-v2-workflow-doc (PR#19), chore/workflow-doc (PR#20), chore/working-tree-rescue-2026-05-12 (PR#18), chore/backlog-init (PR#21), feature/caep-registry-endpoints (orphaned probe-sprint base). Cleanup via `git branch -d <name>` für jeweils. Vermutlich nach heutigem Sprint zusätzliche Branches dazu (fix/credit-middleware-schema-alignment wurde von GitHub automatisch gelöscht, aber lokal noch zu prüfen).
 
+### Voll-Secret-Scan moltrust-api Full-History (Vorbedingung für etwaigen History-Rewrite)
+- **Status:** Open
+- **Aufwand:** M
+- **Added:** 2026-05-22
+- **Source:** Test-Key-Incident Phase-2-SPEC (`docs/specs/2026-05-22_test-key-history-scrub-SPEC.md`, §1 / §10.3 Pkt 5)
+- **Details:** Der Test-Key-History-Scrub-Sprint hat für moltrust-api **Option C** gewählt — kein History-Rewrite, nur Working-Tree-Redact von `pentest.sh`. Falls je ein echter Full-History-Rewrite von moltrust-api erwogen wird, ist dieser Scan **zwingende Vorbedingung**: `mt_test_key_2026` steckt in 9 History-Dateien, und Commit `e51c05a` (`fix(security): CRITICAL-1,2,5 — hardcoded key … CLI private key`) deutet auf **weitere historische Secrets**. Vor einem Rewrite die Full History mit gitleaks/trufflehog scannen und **alle** Funde in **einem** `git-filter-repo --replace-text`-Lauf entfernen — nicht nur das `mt_test_key_2026`-Pattern. Ohne diesen Scan ließe ein Rewrite andere Alt-Secrets in der History zurück und müsste später wiederholt werden.
+
 ---
 
 ## Deferred (Decision Required Before Activation)
@@ -471,6 +478,7 @@
 
 ## Changelog
 
+- **2026-05-22 — V1.5**: Ein Low-Item aufgenommen — Voll-Secret-Scan moltrust-api Full-History, als Vorbedingung für einen etwaigen späteren History-Rewrite. Ausgelagert aus dem Test-Key-Incident Phase-2-SPEC (`docs/specs/2026-05-22_test-key-history-scrub-SPEC.md`); dort Option C gewählt (kein Rewrite, nur Working-Tree-Redact von `pentest.sh`).
 - **2026-05-15 — V1.4**: API-Sprint-Übergabe aus moltrust-web Phase-1-Analyse §8 als verfolgbare Items aufgenommen, ausgelöst durch den Versionierungs-Audit am 2026-05-15 (~/moltstack/audits/2026-05-15_api-versioning.md) und die Conversion-Chat-Nachfrage zur §8-Kommunikation.
   - **Neu High (1):** AAE ins Credential einbauen (Phase-1 UNC-07 + Lars-Entscheidung) — koordinieren mit Credit-Middleware-Idempotency-Sprint (beide Schema-Change auf /identity/register, nicht parallel).
   - **Neu Medium (4):** API-Versionierung Single-Source + v1-Contract klären (Audit-Befunde: 3 Stellen ohne zentrale Quelle, Rückwärts-Dekrement 2.6→2.4, 0/136 Pfade versioniert), Trust-Score-Reads Rate-Limiting (Handler-Signatur-Refactor), CAEP als Extension in agent-card.json deklarieren, .well-known-Mirror-Generierung + Deprecation-Header.

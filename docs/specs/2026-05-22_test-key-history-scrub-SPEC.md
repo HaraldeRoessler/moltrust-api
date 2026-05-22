@@ -2,7 +2,7 @@
 
 - **Datum:** 2026-05-22
 - **Autor:** Lars Kroehl (CryptoKRI GmbH)
-- **Status:** DRAFT — wartet auf Spec-Abnahme. **Kein `git-filter-repo`-Run erfolgt.**
+- **Status:** FINAL — Decisions (§10.3) eingearbeitet, Abnahme 2026-05-22. PR offen → wartet auf finale Abnahme + Merge. **Kein `git-filter-repo`-Run erfolgt.**
 - **Sprint-Kontext:** Test-Key-Incident, Phase 2 (Phase 1 = Revocation, abgeschlossen).
 - **Klasse:** Security-Incident, destruktiv-irreversibler History-Rewrite.
 
@@ -51,6 +51,9 @@ Betroffene Commits u.a.: `6c6a892` (Initial commit), `e51c05a`
 > deutet zudem auf **weitere historische Secrets** in moltrust-api hin — ein
 > moltrust-api-Rewrite erfordert daher einen vorgeschalteten Voll-Secret-Scan
 > (gitleaks/trufflehog), nicht nur das `mt_test_key_2026`-Pattern.
+>
+> **Abnahme 2026-05-22:** als BACKLOG-Item in moltrust-api `docs/BACKLOG.md`
+> ausgelagert — Vorbedingung für einen etwaigen späteren moltrust-api-Rewrite.
 
 ---
 
@@ -168,6 +171,9 @@ git push --force origin 'refs/tags/*'
 - **Empfehlung:** nur **(a)** — `1.2.1` mit cleanem README publishen, **kein**
   Yank. Incident-Doc vermerkt: historische Releases tragen einen nun toten
   Key-String.
+- **Entscheidung (Abnahme 2026-05-22):** Opt (a). Das `1.2.1`-Release ist ein
+  **separater Folge-Sprint nach dem mcp-server-Scrub (P2a)** — nicht Teil von
+  P2a/P2b. Kein Yank.
 
 ---
 
@@ -185,7 +191,10 @@ git push --force origin 'refs/tags/*'
 
 ## 8. §2.3 Cross-Review (Gate vor Ausführung)
 
-- **Vor jedem Force-Push** ein fokussierter 3-Modell-Cross-Review
+- **Geltung:** nur **P2a** (filter-repo + Force-Push = destruktiv-irreversibel).
+  **P2b** (moltrust-api Working-Tree-Redact) ist ein regulärer Commit → **kein**
+  §2.3-Review nötig (Abnahme 2026-05-22).
+- **Vor dem Force-Push** ein fokussierter 3-Modell-Cross-Review
   (`ai_review.py`, GPT-4o + Gemini + Claude-Synthese — **kein** voller
   Security-Mode).
 - **Review-Scope:** (a) exakter `filter-repo`-Befehl + Replacements-Datei,
@@ -221,45 +230,64 @@ git push --force origin 'refs/tags/*'
 Günstig und sauber: 1 Datei, 0 offene PRs, 1 Branch, Public, primäre
 Glama-sichtbare Exposure. Befehle §2.1. Disruption minimal.
 
-### 10.2 moltrust-api — **LARS-ENTSCHEIDUNG erforderlich**
+### 10.2 moltrust-api — **ENTSCHIEDEN (Abnahme 2026-05-22): Option C**
 Ein Full-History-Rewrite eines **220-Commit / 10-Branch Public-Repos mit 4+
-offenen PRs** — für einen **toten** Key — ist hoch-disruptiv bei geringem
-Gewinn. Optionen:
+offenen PRs** — für einen **toten** Key — wäre hoch-disruptiv bei geringem
+Gewinn. Bewertete Optionen:
 
-| Opt | Vorgehen | Disruption | Bewertung |
+| Opt | Vorgehen | Disruption | Wahl |
 |---|---|---|---|
-| A | Full Scrub aller Refs | PRs #3/#4/#7/#10 vorher mergen/schließen; 10 Branches + 2 Tags rewrite | Hoch |
-| B | Nur `main` scrubben | Key bleibt in Stale-Branch-History | Mittel, inkonsequent |
-| C | **Kein Rewrite** — nur Working-Tree: `pentest.sh` redacten (Key → `$MOLTRUST_API_KEY`/Placeholder) per normalem Commit | Minimal | **Empfohlen** |
-| D | Full Scrub **aufschieben**, bis offene PRs gelandet sind | Verschoben | Empfohlen falls Rewrite gewollt |
+| A | Full Scrub aller Refs — PRs #3/#4/#7/#10 vorher mergen/schließen; 10 Branches + 2 Tags rewrite | Hoch | — |
+| B | Nur `main` scrubben — Key bleibt in Stale-Branch-History | Mittel | — |
+| **C** | **Kein Rewrite** — Working-Tree-Redact, Key → `***REMOVED***`, regulärer Commit | Minimal | **✅ GEWÄHLT** |
+| D | Full Scrub aufschieben bis offene PRs gelandet | (verschoben) | optional |
 
-**Empfehlung: C (ggf. + D).** Da der Key revoked ist, ist ein Public-Repo-
-Rewrite, der 4 PRs bricht, unverhältnismäßig. Minimum: `pentest.sh` im
-Working-Tree entschärfen (normaler Commit, kein Rewrite). Ein Full-Scrub von
-moltrust-api nur, wenn explizit gewünscht — dann zwingend mit vorgeschaltetem
-Voll-Secret-Scan (§1-Warnung: `e51c05a` deutet auf weitere Alt-Secrets) und
-nach dem Landen/Schließen der offenen PRs.
+**Entscheidung: Option C** — kein History-Rewrite von moltrust-api. Da der Key
+revoked ist, ist ein Public-Repo-Rewrite, der 4 PRs bricht, unverhältnismäßig.
 
-### 10.3 Offene Abnahme-Fragen an Lars
-1. moltrust-api Scope: **A / B / C / D**?
-2. PyPI: `1.2.1`-Release mit cleanem README — jetzt einplanen oder separat?
-3. Replacement-String: `***REMOVED***` (Konvention) ok, oder anderer Text?
-4. Reihenfolge: moltrust-mcp-server zuerst (klein, isoliert) — bestätigt?
+**Working-Tree-Stand verifiziert (2026-05-22, origin/main):** Von den 9
+History-Dateien enthält **nur `pentest.sh:5`** den Key aktuell im Working-Tree.
+`app/main.py`, `mcp_server.py`, `seed_ecosystem.py`, `test_sandbox.py` existieren,
+tragen den Key aber **nicht mehr** (durch frühere Commits entfernt); die drei
+`.bak`-Dateien + `docs/auto-probe-token-spec.md` existieren gar nicht mehr.
+
+→ **P2b redactet faktisch nur `pentest.sh`** (Key → `***REMOVED***`, regulärer
+Commit, kein filter-repo). Die 8 History-only-Vorkommen bleiben unter Option C
+in der History — akzeptiertes Residual (§12), Key ist tot. Ein etwaiger
+späterer Full-Scrub (Opt D) braucht zwingend den vorgeschalteten Voll-Secret-
+Scan (BACKLOG, §1 / §10.3 Pkt 5).
+
+### 10.3 Entscheidungen (Abnahme 2026-05-22)
+1. **moltrust-api Scope: Option C** — kein Rewrite, Working-Tree-Redact (= P2b).
+2. **PyPI `1.2.1`:** separater Folge-Sprint **nach** dem mcp-server-Scrub (P2a).
+3. **Replacement-String:** `***REMOVED***`.
+4. **Reihenfolge:** **P2a** (moltrust-mcp-server filter-repo + Force-Push) zuerst,
+   dann **P2b** (moltrust-api Working-Tree-Redact).
+5. **Voll-Secret-Scan moltrust-api Full-History:** als separates BACKLOG-Item
+   (moltrust-api `docs/BACKLOG.md`) — Vorbedingung für einen etwaigen späteren
+   Full-Scrub (Opt D).
 
 ---
 
-## 11. Ausführungs-Reihenfolge (NACH Spec-Abnahme — nicht dieser Sprint)
+## 11. Ausführungs-Reihenfolge (NACH finaler Spec-Abnahme + Merge)
 
-1. Spec-Abnahme durch Lars (§10.3 beantwortet).
-2. Pre-Flight: filter-repo-Version, Working-Trees prunen, `--mirror`-Backups.
-3. filter-repo-Run auf frischem Mirror (moltrust-mcp-server zuerst).
-4. Lokale Verifikation (§2.1 E).
+**P2a — moltrust-mcp-server History-Scrub (§2.3-Review-pflichtig):**
+1. Pre-Flight: `filter-repo`-Version prüfen, Working-Trees prunen.
+2. Dated `--mirror`-Backup (§3).
+3. `filter-repo`-Run auf frischem Mirror (§2.1 A–D).
+4. Lokale Verifikation (§2.1 E) — `-S`-Log + `git grep` müssen leer sein.
 5. §2.3 Cross-Review-Gate (§8) — Output abwarten, Blocker = STOP.
-6. Force-Push (Lars-Bestätigung pro Repo).
-7. PyPI `1.2.1`-Release (Opt 6a).
-8. Glama / MCP-Registry Re-Index antriggern.
-9. moltrust-api gemäß §10.2-Entscheid.
-10. Incident-Doc (`docs/incidents/`) — Phase 4 des Sprints.
+6. Force-Push `main` + 13 Tags (Lars-Bestätigung).
+7. Glama / MCP-Registry Re-Index antriggern (§7).
+
+**P2b — moltrust-api Working-Tree-Redact (regulärer Commit, KEIN §2.3-Review):**
+8. `pentest.sh` — Key durch `***REMOVED***` ersetzen (einzige Working-Tree-Datei).
+9. Pre-Commit-Diff, regulärer Commit, PR, Merge.
+
+**Folge-Sprints (separat, nicht Teil von P2a/P2b):**
+10. PyPI `1.2.1`-Release mit cleanem README (§6 Opt a).
+11. Incident-Doc (`docs/incidents/`) — Sprint-Phase 4.
+12. BACKLOG: Voll-Secret-Scan moltrust-api Full-History (Vorbedingung Opt D).
 
 ---
 
@@ -268,5 +296,8 @@ nach dem Landen/Schließen der offenen PRs.
 - Fremd-Forks behalten `mt_test_key_2026` in History (§5) — tragbar, Key tot.
 - PyPI-Alt-Releases `0.1.0`–`1.2.0` behalten den String im README (§6) —
   tragbar, Key tot; `1.2.1` stellt cleanen Default her.
+- **moltrust-api History** behält `mt_test_key_2026` in 8 History-only-Dateien
+  (Option C, kein Rewrite) — tragbar, Key tot; der Working-Tree wird via P2b
+  bereinigt.
 - Such-Index-/Cache-Restbestände (Google, Glama-Cache) klingen über Tage/Wochen
   nach dem Force-Push + Re-Index ab — kein aktiver Eingriff möglich.
