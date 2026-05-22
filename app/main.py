@@ -627,6 +627,10 @@ async def credit_middleware(request: Request, call_next):
 
 # --- Validation Helpers ---
 DID_PATTERN = re.compile(r"^did:moltrust:(?:ext_)?[a-f0-9]{16}$")
+# Permissive pattern for read-only lookup endpoints — accepts legacy/vanity
+# seed DIDs that predate the strict 16-hex convention. Write paths
+# (register/rate/issue) keep the strict DID_PATTERN.
+DID_LOOKUP_PATTERN = re.compile(r"^did:moltrust:[a-z0-9_-]{1,64}$")
 DISPLAY_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-. ]{1,64}$")
 
 def validate_did(did: str) -> str:
@@ -3395,15 +3399,24 @@ async def extended_agent_card(
 @app.get("/a2a/agent-card/{did}")
 @limiter.limit("60/minute")
 async def a2a_trust_card(request: Request, did: str = Path(max_length=128)):
-    if not DID_PATTERN.match(did):
+    if not DID_LOOKUP_PATTERN.match(did):
         raise HTTPException(status_code=400, detail="Invalid DID format")
     if not db_pool:
         raise HTTPException(status_code=503, detail="Database unavailable")
     async with db_pool.acquire() as conn:
-        agent = await conn.fetchrow("SELECT display_name, platform, created_at, base_tx_hash, agent_class, agent_framework FROM agents WHERE did = $1", did)
+        agent = await conn.fetchrow("SELECT display_name, platform, created_at, base_tx_hash, agent_class, agent_framework, revoked_at FROM agents WHERE did = $1", did)
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
-        score = await conn.fetchrow("SELECT COALESCE(AVG(score),0) as avg, COUNT(*) as total FROM ratings WHERE to_did=$1", did)
+        # Trust score: Phase-2 swarm score (same source as /skill/trust-score),
+        # not the legacy ratings average. Revoked agents score 0 — consistent
+        # with /skill/trust-score, which short-circuits revoked agents.
+        if agent["revoked_at"] is not None:
+            trust_score = 0.0
+        else:
+            from app.swarm.trust_score import compute_phase2_score
+            phase2 = await compute_phase2_score(did, conn)
+            trust_score = round(float(phase2["score"] or 0), 2)
+        rating_count = await conn.fetchval("SELECT COUNT(*) FROM ratings WHERE to_did=$1", did)
         cred_count = await conn.fetchval("SELECT COUNT(*) FROM credentials WHERE subject_did=$1", did)
         cred = {"total": cred_count}
     return {
@@ -3412,10 +3425,10 @@ async def a2a_trust_card(request: Request, did: str = Path(max_length=128)):
         "platform": agent["platform"],
         "url": f"https://api.moltrust.ch/identity/verify/{did}",
         "trust": {
-            "score": round(float(score["avg"]), 2),
-            "totalRatings": int(score["total"]),
+            "score": trust_score,
+            "totalRatings": int(rating_count),
             "credentials": int(cred["total"]),
-            "verified": True,
+            "verified": agent["revoked_at"] is None,
             "registeredAt": agent["created_at"].isoformat() if agent["created_at"] else None,
             "baseAnchor": agent["base_tx_hash"],
             "baseScanUrl": f"https://basescan.org/tx/{agent['base_tx_hash']}" if agent["base_tx_hash"] else None
