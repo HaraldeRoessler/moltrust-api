@@ -129,7 +129,7 @@ folgenden Residuen sind dokumentiert akzeptiert (konsistent mit SPEC §12):
 
 1. **PyPI `1.2.1`-Release** mit bereinigtem README — separater Folge-Sprint (SPEC §6 Opt a; kein Yank der Alt-Versionen).
 2. **Voll-Secret-Scan `moltrust-api` Full-History** — bereits als BACKLOG-Item (Low) erfasst (`docs/BACKLOG.md`, V1.5); Vorbedingung für einen etwaigen späteren moltrust-api-History-Rewrite. Commit `e51c05a` („hardcoded key … CLI private key") deutet auf weitere Alt-Secrets.
-3. **Pre-push Token-/Secret-Audit-Hook** — strukturelle Prävention (§9). **Hinweis:** Aktuell existiert hierfür **kein** dediziertes BACKLOG-Item; nächstverwandt sind die `weekly_health_check.sh`-„Token-Audit"-Komponente (anderer Mechanismus, kein Pre-push-Gate) und das „Pre-commit-hook conflict-marker-check"-Item (anderer Zweck). **Empfehlung: eigenes BACKLOG-Item anlegen.**
+3. **Pre-push Token-/Secret-Audit-Hook** — strukturelle Prävention (§9). Erfasst als BACKLOG-Item `### Pre-push Secret-Audit-Hook` (Medium) in `docs/BACKLOG.md` (V1.6).
 
 ---
 
