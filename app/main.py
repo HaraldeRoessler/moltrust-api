@@ -3408,9 +3408,14 @@ async def a2a_trust_card(request: Request, did: str = Path(max_length=128)):
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
         # Trust score: Phase-2 swarm score (same source as /skill/trust-score),
-        # not the legacy ratings average.
-        from app.swarm.trust_score import compute_phase2_score
-        phase2 = await compute_phase2_score(did, conn)
+        # not the legacy ratings average. Revoked agents score 0 — consistent
+        # with /skill/trust-score, which short-circuits revoked agents.
+        if agent["revoked_at"] is not None:
+            trust_score = 0.0
+        else:
+            from app.swarm.trust_score import compute_phase2_score
+            phase2 = await compute_phase2_score(did, conn)
+            trust_score = round(float(phase2["score"] or 0), 2)
         rating_count = await conn.fetchval("SELECT COUNT(*) FROM ratings WHERE to_did=$1", did)
         cred_count = await conn.fetchval("SELECT COUNT(*) FROM credentials WHERE subject_did=$1", did)
         cred = {"total": cred_count}
@@ -3420,7 +3425,7 @@ async def a2a_trust_card(request: Request, did: str = Path(max_length=128)):
         "platform": agent["platform"],
         "url": f"https://api.moltrust.ch/identity/verify/{did}",
         "trust": {
-            "score": round(float(phase2["score"] or 0), 2),
+            "score": trust_score,
             "totalRatings": int(rating_count),
             "credentials": int(cred["total"]),
             "verified": agent["revoked_at"] is None,
