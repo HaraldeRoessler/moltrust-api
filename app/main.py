@@ -1020,8 +1020,8 @@ async def register_agent(request: Request, body: RegisterRequest, api_key: str =
                 """INSERT INTO credentials (subject_did, credential_type, issuer, issued_at, expires_at, proof_value, raw_vc)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)""",
                 agent_did, "AgentTrustCredential", auto_vc["issuer"],
-                datetime.datetime.fromisoformat(auto_vc["issuanceDate"].replace("Z","")),
-                datetime.datetime.fromisoformat(auto_vc["expirationDate"].replace("Z","")),
+                datetime.datetime.fromisoformat(vc_valid_from(auto_vc).replace("Z","")),
+                datetime.datetime.fromisoformat(vc_valid_until(auto_vc).replace("Z","")),
                 auto_vc["proof"]["proofValue"],
                 json.dumps(auto_vc)
             )
@@ -2886,7 +2886,7 @@ async def register_batch(request: Request):
 
 
 # --- Verifiable Credentials ---
-from app.credentials import issue_credential, verify_credential
+from app.credentials import issue_credential, verify_credential, vc_valid_from, vc_valid_until
 from app.ipfs_publisher import publish_to_ipfs, get_ipfs_url
 
 class IssueVCRequest(BaseModel):
@@ -2953,8 +2953,8 @@ async def issue_vc(request: Request, body: IssueVCRequest, api_key: str = Depend
                 """INSERT INTO credentials (subject_did, credential_type, issuer, issued_at, expires_at, proof_value, raw_vc)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)""",
                 body.subject_did, body.credential_type, vc["issuer"],
-                datetime.datetime.fromisoformat(vc["issuanceDate"].replace("Z","")),
-                datetime.datetime.fromisoformat(vc["expirationDate"].replace("Z","")),
+                datetime.datetime.fromisoformat(vc_valid_from(vc).replace("Z","")),
+                datetime.datetime.fromisoformat(vc_valid_until(vc).replace("Z","")),
                 vc["proof"]["proofValue"],
                 json.dumps(vc)
             )
@@ -5353,15 +5353,16 @@ class MusicRevokeRequest(BaseModel):
 
 def _build_music_vc(row) -> dict:
     """Build VerifiedMusicCredential from DB row."""
+    issued = row["issued_at"].isoformat() if hasattr(row["issued_at"], "isoformat") else str(row["issued_at"])
     return {
         "@context": [
-            "https://www.w3.org/2018/credentials/v1",
+            "https://www.w3.org/ns/credentials/v2",
             "https://moltrust.ch/ns/music/v1",
         ],
         "type": ["VerifiableCredential", "VerifiedMusicCredential"],
         "id": row["id"],
         "issuer": "did:moltrust:registry",
-        "issuanceDate": row["issued_at"].isoformat() if hasattr(row["issued_at"], "isoformat") else str(row["issued_at"]),
+        "validFrom": issued,
         "credentialSubject": {
             "agentDid": row["agent_did"],
             "humanName": row["human_name"],
@@ -5377,7 +5378,7 @@ def _build_music_vc(row) -> dict:
             },
             "provenance": {
                 "trackHash": row["track_hash"],
-                "issuanceDate": row["issued_at"].isoformat() if hasattr(row["issued_at"], "isoformat") else str(row["issued_at"]),
+                "issuanceDate": issued,
                 "euAiActCompliance": "Article 50(2)",
             },
         },
@@ -5445,15 +5446,16 @@ async def issue_music_credential(request: Request, body: MusicCredentialRequest,
     now = datetime.datetime.utcnow()
 
     # Build VC
+    issued_ts = now.isoformat() + "Z"
     vc = {
         "@context": [
-            "https://www.w3.org/2018/credentials/v1",
+            "https://www.w3.org/ns/credentials/v2",
             "https://moltrust.ch/ns/music/v1",
         ],
         "type": ["VerifiableCredential", "VerifiedMusicCredential"],
         "id": credential_id,
         "issuer": "did:moltrust:registry",
-        "issuanceDate": now.isoformat() + "Z",
+        "validFrom": issued_ts,
         "credentialSubject": {
             "agentDid": body.agent_did,
             "humanName": body.human_name,
@@ -5469,7 +5471,7 @@ async def issue_music_credential(request: Request, body: MusicCredentialRequest,
             },
             "provenance": {
                 "trackHash": track_hash,
-                "issuanceDate": now.isoformat() + "Z",
+                "issuanceDate": issued_ts,
                 "euAiActCompliance": "Article 50(2)",
             },
         },

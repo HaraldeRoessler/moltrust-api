@@ -133,14 +133,14 @@ async def issue_endorsement(
     vc_id = f"urn:uuid:{uuid.uuid4()}"
     vc = {
         "@context": [
-            "https://www.w3.org/2018/credentials/v1",
-            "https://moltrust.ch/credentials/v1"
+            "https://www.w3.org/ns/credentials/v2",
+            "https://moltrust.ch/credentials/v1",
         ],
         "id": vc_id,
         "type": ["VerifiableCredential", "SkillEndorsementCredential"],
         "issuer": endorser_did,
-        "issuanceDate": now.isoformat(),
-        "expirationDate": expires_at.isoformat(),
+        "validFrom": now.isoformat(),
+        "validUntil": expires_at.isoformat(),
         "credentialSubject": {
             "id": endorsed_did,
             "skill": skill,
