@@ -8,7 +8,7 @@ import tweepy
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
-from app.credentials import issue_credential
+from app.credentials import issue_credential, vc_valid_from, vc_valid_until
 
 # ---------------------------------------------------------------------------
 # Config
@@ -70,8 +70,8 @@ async def ensure_self_registered():
             """INSERT INTO credentials (subject_did, credential_type, issuer, issued_at, expires_at, proof_value, raw_vc)
             VALUES ($1, $2, $3, $4, $5, $6, $7)""",
             AMBASSADOR_DID, "AgentTrustCredential", vc["issuer"],
-            datetime.datetime.fromisoformat(vc["issuanceDate"].replace("Z", "")),
-            datetime.datetime.fromisoformat(vc["expirationDate"].replace("Z", "")),
+            datetime.datetime.fromisoformat(vc_valid_from(vc).replace("Z", "")),
+            datetime.datetime.fromisoformat(vc_valid_until(vc).replace("Z", "")),
             vc["proof"]["proofValue"],
             json.dumps(vc),
         )

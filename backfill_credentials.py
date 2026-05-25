@@ -3,7 +3,7 @@ import sys, os, json, asyncio
 sys.path.insert(0, os.path.expanduser('~/moltstack'))
 
 import asyncpg
-from app.credentials import issue_credential
+from app.credentials import issue_credential, vc_valid_from, vc_valid_until
 
 async def main():
     conn = await asyncpg.connect(host='localhost', database='moltstack',
@@ -39,8 +39,8 @@ async def main():
                 """INSERT INTO credentials (subject_did, credential_type, issuer, issued_at, expires_at, proof_value, raw_vc)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)""",
                 did, 'AgentTrustCredential', vc['issuer'],
-                __import__('datetime').datetime.fromisoformat(vc['issuanceDate'].replace('Z','')),
-                __import__('datetime').datetime.fromisoformat(vc['expirationDate'].replace('Z','')),
+                __import__('datetime').datetime.fromisoformat(vc_valid_from(vc).replace('Z','')),
+                __import__('datetime').datetime.fromisoformat(vc_valid_until(vc).replace('Z','')),
                 vc['proof']['proofValue'],
                 json.dumps(vc)
             )
