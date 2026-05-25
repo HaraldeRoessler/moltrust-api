@@ -1386,6 +1386,15 @@ async def get_trust_score(did: str):
             }
             # CAEP: alias valid_until = cache_valid_until (keep both, non-breaking)
             score_response["valid_until"] = score_response["cache_valid_until"]
+            # F2 cold-start: surface a public-data-derived starting score for
+            # agents that have not yet collected any endorsements. Honest
+            # nulls when no public data exists — see app/cold_start.py.
+            if result.get("endorser_count", 0) == 0:
+                from app.cold_start import get_cold_start_score
+                try:
+                    score_response.update(await get_cold_start_score(did, conn))
+                except Exception as cs_err:
+                    logger.warning("cold-start failed for %s: %s", did, cs_err)
             # CAEP: sign deterministic minimal payload with registry key
             if score_response["computed_at"] and score_response["valid_until"]:
                 from app.signature import sign_payload, build_score_signing_payload
