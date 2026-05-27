@@ -1619,6 +1619,136 @@ async def trust_gate(
         }
 
 
+# ---------------------------------------------------------------------------
+# [6] Operator-level budget caps for agents
+# ---------------------------------------------------------------------------
+# Multi-tenancy layered on top of the existing self-sovereign agent model
+# via a single new column: `agents.operator_did`. An agent's owner can
+# claim an operator (themselves or someone else) who then gets to set a
+# monthly CHF cap on the agent's spend. Trust-gating intentionally stays
+# oblivious to budget state — budget is not trust (Lars-decision
+# 2026-05-27). See `app/budget.py` for the status state machine.
+
+
+class ClaimOperatorRequest(BaseModel):
+    operator_did: str = Field(max_length=255)
+
+    @field_validator("operator_did")
+    @classmethod
+    def validate_operator_did(cls, v):
+        if not (DID_PATTERN.match(v) or v.startswith("did:web:") or v.startswith("did:key:")):
+            raise ValueError("Invalid operator DID format")
+        return v
+
+
+class BudgetCapRequest(BaseModel):
+    monthly_cap_chf: float = Field(ge=0.0)
+    warning_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+
+
+@app.post("/agents/{did:path}/operator")
+@limiter.limit("10/minute")
+async def claim_agent_operator(
+    request: Request,
+    did: str,
+    body: ClaimOperatorRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    """Set or replace the operator of an agent. Only the agent's own owner
+    can call this — the owner_did on the API key must equal the agent DID
+    itself (current self-sovereign model). Most common pattern: the agent
+    claims itself as operator so it can put a cap on its own spend."""
+    async with db_pool.acquire() as conn:
+        caller_did = await resolve_did_from_api_key(conn, api_key)
+        if not caller_did:
+            raise HTTPException(401, "API key not linked to a DID")
+        agent_row = await conn.fetchrow(
+            "SELECT did FROM agents WHERE did = $1", did,
+        )
+        if agent_row is None:
+            raise HTTPException(404, "Agent not found")
+        if caller_did != did:
+            raise HTTPException(403, "Caller is not the agent owner")
+        await conn.execute(
+            "UPDATE agents SET operator_did = $1 WHERE did = $2",
+            body.operator_did, did,
+        )
+        return {"agent_did": did, "operator_did": body.operator_did}
+
+
+def _require_operator_self(caller_did, operator_did: str) -> None:
+    if not caller_did:
+        raise HTTPException(401, "API key not linked to a DID")
+    if caller_did != operator_did:
+        raise HTTPException(403, "Caller may only manage their own operator scope")
+
+
+async def _require_agent_is_operated_by(
+    conn, agent_did: str, operator_did: str,
+) -> None:
+    row = await conn.fetchrow(
+        "SELECT operator_did FROM agents WHERE did = $1", agent_did,
+    )
+    if row is None:
+        raise HTTPException(404, "Agent not found")
+    if row["operator_did"] != operator_did:
+        raise HTTPException(403, "Agent is not operated by this operator")
+
+
+@app.put("/operators/{operator_did}/agents/{agent_did}/budget-cap")
+@limiter.limit("20/minute")
+async def set_budget_cap(
+    request: Request,
+    operator_did: str,
+    agent_did: str,
+    body: BudgetCapRequest,
+    api_key: str = Depends(verify_api_key),
+):
+    from app.budget import upsert_cap
+    async with db_pool.acquire() as conn:
+        caller_did = await resolve_did_from_api_key(conn, api_key)
+        _require_operator_self(caller_did, operator_did)
+        await _require_agent_is_operated_by(conn, agent_did, operator_did)
+        async with conn.transaction():
+            return await upsert_cap(
+                conn, operator_did, agent_did,
+                body.monthly_cap_chf, body.warning_threshold,
+            )
+
+
+@app.get("/operators/{operator_did}/agents/{agent_did}/budget-cap")
+@limiter.limit("60/minute")
+async def get_budget_cap(
+    request: Request,
+    operator_did: str,
+    agent_did: str,
+    api_key: str = Depends(verify_api_key),
+):
+    from app.budget import get_cap
+    async with db_pool.acquire() as conn:
+        caller_did = await resolve_did_from_api_key(conn, api_key)
+        _require_operator_self(caller_did, operator_did)
+        await _require_agent_is_operated_by(conn, agent_did, operator_did)
+        result = await get_cap(conn, operator_did, agent_did)
+        if result is None:
+            raise HTTPException(404, "No budget cap set for this agent")
+        return result
+
+
+@app.get("/operators/{operator_did}/budget-caps")
+@limiter.limit("30/minute")
+async def list_budget_caps(
+    request: Request,
+    operator_did: str,
+    api_key: str = Depends(verify_api_key),
+):
+    from app.budget import list_caps_for_operator
+    async with db_pool.acquire() as conn:
+        caller_did = await resolve_did_from_api_key(conn, api_key)
+        _require_operator_self(caller_did, operator_did)
+        return await list_caps_for_operator(conn, operator_did)
+
+
 @app.get("/skill/endorsements/given/{did:path}")
 async def get_endorsements_given(did: str):
     """All endorsements given by an agent (transparency). Free."""
