@@ -520,6 +520,12 @@ from app.credits import (
     ENDPOINT_COSTS,
 )
 
+# Internal accounting in app.budget is CHF; credit_middleware deducts integer
+# credits. Multiply at the call boundary. Anchor against the finalized
+# credit-pack price once decided.
+CREDIT_CHF_RATE = 0.01
+
+
 @app.middleware("http")
 async def credit_middleware(request: Request, call_next):
     if not CREDITS_ENABLED or not db_pool:
@@ -612,6 +618,17 @@ async def credit_middleware(request: Request, call_next):
                             "description, balance_after) "
                             "VALUES ($1, NULL, $2, 'api_call', $3, $4, $5)",
                             caller_did, cost, ref, f"API call: {ref}", new_balance,
+                        )
+                        # Operator-level budget meter — no-op for unmetered
+                        # agents (no operator_did) and partner-exempt platforms
+                        # (Ownify / Aeoess / AgentNexus). Telegram alert is
+                        # fire-and-forget inside record_spend_event itself.
+                        # Convert credits → CHF at the call boundary; budget.py
+                        # works in CHF internally.
+                        from app.budget import record_spend_event
+                        await record_spend_event(
+                            conn, caller_did, "api_call",
+                            amount_chf=cost * CREDIT_CHF_RATE,
                         )
         except Exception as e:
             # Unerwarteter DB-Fehler: NIEMALS stiller 2xx-Erfolg.

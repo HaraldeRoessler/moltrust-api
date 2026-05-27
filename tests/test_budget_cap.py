@@ -395,3 +395,56 @@ async def test_monthly_reset_does_not_revive_suspended(budget_test_actor):
     assert result["status"] == "suspended"
     assert result["current_month_spend"] == 5.0
     assert result["current_month_key"] != "2020-01"
+
+
+# ---------------------------------------------------------------------------
+# Platform exemption — Ownify / Aeoess / AgentNexus partner deals
+# ---------------------------------------------------------------------------
+
+async def test_exempt_platform_short_circuits(budget_test_actor):
+    """Ownify agents bypass metering — status='exempt' even with no cap row,
+    and the spend event is still logged for analytics."""
+    from app.main import db_pool
+    from app.budget import record_spend_event
+
+    op, agent, _ = await budget_test_actor()
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE agents SET platform = 'ownify' WHERE did = $1", agent,
+        )
+        result = await record_spend_event(conn, agent, "api_call", 0.05)
+        count = await conn.fetchval(
+            "SELECT COUNT(*) FROM budget_spend_events WHERE agent_did = $1", agent,
+        )
+        cap_row = await conn.fetchrow(
+            "SELECT * FROM agent_budget_caps WHERE agent_did = $1", agent,
+        )
+    assert result["status"] == "exempt"
+    assert result["exemption_reason"] == "platform:ownify"
+    assert result["transition"] is None
+    assert result["spend_pct"] == 0.0
+    assert count == 1, "exempt path must still log spend events for analytics"
+    assert cap_row is None, "exempt path must not create a cap row"
+
+
+async def test_exempt_overrides_configured_cap(budget_test_actor):
+    """Deal terms beat operator policy: even a fully-configured cap on an
+    Aeoess agent doesn't meter. Cap row stays untouched (spend stays 0)."""
+    from app.main import db_pool
+    from app.budget import upsert_cap, record_spend_event, get_cap
+
+    op, agent, _ = await budget_test_actor()
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await upsert_cap(conn, op, agent, monthly_cap_chf=10.0)
+        # Promote to a partner platform after the cap is set.
+        await conn.execute(
+            "UPDATE agents SET platform = 'aeoess' WHERE did = $1", agent,
+        )
+        result = await record_spend_event(conn, agent, "api_call", 11.5)
+        # Cap row must NOT be touched: spend stays 0, status stays active.
+        cap = await get_cap(conn, op, agent)
+    assert result["status"] == "exempt"
+    assert result["exemption_reason"] == "platform:aeoess"
+    assert cap["current_month_spend"] == 0.0
+    assert cap["status"] == "active"
