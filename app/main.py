@@ -1411,6 +1411,203 @@ async def get_trust_score(did: str):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+
+# ---------------------------------------------------------------------------
+# F3 Trust-Gating Primitive
+# ---------------------------------------------------------------------------
+# Public ALLOW/DENY decision for a counter-party DID. No API key required;
+# this is meant to be called by every Agent-to-Agent handshake, so behaves
+# like DNS — open lookup, rate-limited per IP. Always HTTP 200 with the
+# decision in the body, never a 403.
+#
+# Three Lars-decisions baked in here (briefing 2026-05-25):
+#   1. Cold-start is OPT-IN via `?allow_cold_start=true`. Default `false`
+#      keeps the flywheel pressure on agents to collect endorsements.
+#   2. `score_withheld` is a distinct reason — consumers must be able to
+#      tell "score not yet released" apart from "score too low" and
+#      "agent unknown".
+#   3. SDK is Python-first (`app/sdk/trust_gate.py`). TypeScript ships as
+#      a doc snippet; no npm package until the endpoint is verified live.
+
+GATE_REGISTER_URL = "https://moltrust.ch/register"
+
+
+async def _log_gate_event(
+    conn,
+    queried_did: str,
+    decision: str,
+    reason: str | None,
+    score_source: str | None,
+    trust_score: float | None,
+    min_score_required: float,
+    allow_cold_start: bool,
+    context: str | None,
+    caller_ip: str | None,
+) -> None:
+    """Append one audit row to `gate_events`. Swallow DB errors — the decision
+    must reach the caller even if the audit log is unhappy."""
+    try:
+        await conn.execute(
+            """
+            INSERT INTO gate_events
+              (queried_did, decision, reason, score_source, trust_score,
+               min_score_required, allow_cold_start, context, caller_ip)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            """,
+            queried_did, decision, reason, score_source, trust_score,
+            min_score_required, allow_cold_start, context, caller_ip,
+        )
+    except Exception as e:
+        logger.warning("gate_event log failed for %s: %s", queried_did, e)
+
+
+@app.get("/trust/gate/{did:path}")
+@limiter.limit("100/minute")
+async def trust_gate(
+    request: Request,
+    did: str,
+    min_score: float = Query(50.0, ge=0.0, le=100.0),
+    context: str | None = Query(None, max_length=100),
+    allow_cold_start: bool = Query(False),
+):
+    """ALLOW/DENY a counter-party DID. F3 flywheel primitive.
+
+    Always returns HTTP 200; inspect `decision` in the body.
+
+    Decision tree:
+      1. Agent unknown                                                  → DENY agent_not_found
+      2. Phase 2 returns a real score:
+           score >= min_score                                           → ALLOW (behavioral)
+           score <  min_score                                           → DENY  insufficient_trust_score (behavioral)
+      3. Phase 2 withholds (< 3 endorsers, score is null):
+           allow_cold_start = false                                     → DENY  score_withheld
+           allow_cold_start = true:
+             cold_start_score is null                                   → DENY  score_withheld
+             cold_start_score >= min_score                              → ALLOW (cold_start)
+             cold_start_score <  min_score                              → DENY  insufficient_trust_score (cold_start)
+    """
+    from app.swarm.trust_score import compute_phase2_score
+
+    caller_ip = _anonymize_ip(_get_client_ip(request))
+    verified_at = datetime.datetime.utcnow().isoformat() + "Z"
+
+    async with db_pool.acquire() as conn:
+        agent_row = await conn.fetchrow(
+            "SELECT did, revoked_at FROM agents WHERE did = $1", did,
+        )
+        if agent_row is None:
+            await _log_gate_event(
+                conn, did, "DENY", "agent_not_found", None, None,
+                min_score, allow_cold_start, context, caller_ip,
+            )
+            return {
+                "did": did,
+                "decision": "DENY",
+                "reason": "agent_not_found",
+                "trust_score": None,
+                "min_score_required": min_score,
+                "register_url": GATE_REGISTER_URL,
+            }
+
+        result = await compute_phase2_score(did, conn)
+        score = result.get("score")
+        withheld = result.get("withheld", False)
+
+        # Path 2 — behavioral score is real
+        if not withheld and score is not None:
+            if score >= min_score:
+                await _log_gate_event(
+                    conn, did, "ALLOW", None, "behavioral", float(score),
+                    min_score, allow_cold_start, context, caller_ip,
+                )
+                return {
+                    "did": did,
+                    "decision": "ALLOW",
+                    "trust_score": float(score),
+                    "min_score_required": min_score,
+                    "score_source": "behavioral",
+                    "verified_at": verified_at,
+                }
+            await _log_gate_event(
+                conn, did, "DENY", "insufficient_trust_score", "behavioral",
+                float(score), min_score, allow_cold_start, context, caller_ip,
+            )
+            return {
+                "did": did,
+                "decision": "DENY",
+                "reason": "insufficient_trust_score",
+                "trust_score": float(score),
+                "min_score_required": min_score,
+                "score_source": "behavioral",
+                "register_url": GATE_REGISTER_URL,
+            }
+
+        # Path 3 — withheld. Cold-start is opt-in.
+        if not allow_cold_start:
+            await _log_gate_event(
+                conn, did, "DENY", "score_withheld", None, None,
+                min_score, allow_cold_start, context, caller_ip,
+            )
+            return {
+                "did": did,
+                "decision": "DENY",
+                "reason": "score_withheld",
+                "trust_score": None,
+                "min_score_required": min_score,
+                "register_url": GATE_REGISTER_URL,
+            }
+
+        from app.cold_start import get_cold_start_score
+        cold = await get_cold_start_score(did, conn)
+        cs_score = cold.get("cold_start_score")
+
+        if cs_score is None:
+            await _log_gate_event(
+                conn, did, "DENY", "score_withheld", "cold_start", None,
+                min_score, allow_cold_start, context, caller_ip,
+            )
+            return {
+                "did": did,
+                "decision": "DENY",
+                "reason": "score_withheld",
+                "trust_score": None,
+                "min_score_required": min_score,
+                "score_source": "cold_start",
+                "cold_start_basis": cold.get("cold_start_basis"),
+                "register_url": GATE_REGISTER_URL,
+            }
+
+        if cs_score >= min_score:
+            await _log_gate_event(
+                conn, did, "ALLOW", None, "cold_start", float(cs_score),
+                min_score, allow_cold_start, context, caller_ip,
+            )
+            return {
+                "did": did,
+                "decision": "ALLOW",
+                "trust_score": float(cs_score),
+                "min_score_required": min_score,
+                "score_source": "cold_start",
+                "cold_start_basis": cold.get("cold_start_basis"),
+                "verified_at": verified_at,
+            }
+
+        await _log_gate_event(
+            conn, did, "DENY", "insufficient_trust_score", "cold_start",
+            float(cs_score), min_score, allow_cold_start, context, caller_ip,
+        )
+        return {
+            "did": did,
+            "decision": "DENY",
+            "reason": "insufficient_trust_score",
+            "trust_score": float(cs_score),
+            "min_score_required": min_score,
+            "score_source": "cold_start",
+            "cold_start_basis": cold.get("cold_start_basis"),
+            "register_url": GATE_REGISTER_URL,
+        }
+
+
 @app.get("/skill/endorsements/given/{did:path}")
 async def get_endorsements_given(did: str):
     """All endorsements given by an agent (transparency). Free."""
