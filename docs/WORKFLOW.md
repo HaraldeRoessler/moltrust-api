@@ -451,10 +451,41 @@ Jede Arbeitsiteration an einem versionierten Artefakt wird committet, **bevor** 
 
 Als erste Handlung an einem Repo: `git worktree list`, `git status` je Worktree, `git fetch origin` + `origin/main`-Hash (ahead/behind). Neue Arbeit startet in einem **frischen Branch** im dedizierten Console-Worktree. *Frischer Branch* = abgezweigt von `origin/main` **nach** `git fetch`, **0 Commits behind** `origin/main` — **nicht** von lokalem/stale `main`.
 
+## 12. External Publish Review
+
+Lessons-Reaktion auf den moltrust-openclaw-v2-Sprint (Mai 2026): lokale Tests + `npm publish --dry-run` sind notwendig, aber **nicht hinreichend**, bevor ein Artefakt ausserhalb der eigenen Repo-/Org-Grenze publik wird. §12 macht den 3-Modell-Review zur **Vorbedingung**, nicht zur optionalen Hygiene.
+
+**Geltungsbereich** — §12 gilt für jede Aktion, die einen Artefakt-Stand **ausserhalb der MolTrust-Repos sichtbar** macht:
+
+- **(a)** `npm publish` an eine öffentliche Registry (inkl. Prerelease-Tags via `--tag`; `--dry-run` ist ausgenommen).
+- **(b)** `gh pr create` gegen ein Repo **ausserhalb** der `MoltyCel/*`-Org (Outreach-PRs, Awesome-Listen, Spec-Repos, Upstream-Fixes).
+- **(c)** Outreach-Mails an externe Empfänger (Standardisierungs-Gremien, Vendor/Partner, Pitch-Drafts) — sobald der Empfängerkreis ausserhalb von CryptoKRI GmbH liegt.
+
+**Nicht abgedeckt (keine §12-Pflicht):** interne MolTrust-Repos/Channels, Code-Reviews innerhalb des eigenen Repos, Server-Deploys (§11 gilt dort), `npm publish --dry-run`.
+
+### 12.1 3-Modell-Review als Vorbedingung
+
+Vor jeder §12-Aktion MUSS `~/moltstack/agents/ai_review.py` mit den drei Reviewern gelaufen sein:
+
+- **gpt-5** (OpenAI) — semantische Kohärenz, Edge-Case-Logik
+- **gemini-3.1-pro-preview** (Google) — technische Analyse, Spec-Konformität
+- **sonar-pro** (Perplexity Sonar Pro) — web-grounded Faktenprüfung (Modell-IDs, externe Referenzen, Cross-Repo-Konvention)
+
+Synthese läuft via Claude im selben Skript. Output landet in `~/moltstack/reviews/YYYYMMDD_<label>_review.md` (gitignored — siehe globales `CLAUDE.md`, Sektion „Security — AI Review Pipeline"). Schweigender Skripterfolg ist **kein** Pass: die Synthese MUSS Befunde nach Schweregrad ausweisen oder explizit „keine Blocker" konstatieren.
+
+### 12.2 Briefing-Template
+
+Jeder Review-Run wird durch ein **Briefing-Markdown** angestossen, kein roher Code-/Diff-Dump. Master-Template liegt im Review-Ordner (`~/moltstack/reviews/_templates/review-briefing.md`). Das Briefing benennt mindestens: Artefakt-ID (Paket+Version / PR-URL / Mail-Subject), Geltungsbereich-Kategorie (a/b/c), zu prüfender Inhalt, gezielte Review-Fragen, sowie bewusst getroffene Entscheidungen (verhindert Wiederholung in der Synthese).
+
+### 12.3 Blocker-Handling
+
+Synthese markiert Findings nach Schweregrad (Blocker / Major / Minor / Note). Bei **Blocker oder Major: §12-Aktion wird gestoppt**, Fix → erneuter Review-Lauf. Minor/Note werden vor der Aktion adressiert oder als Follow-up in `docs/BACKLOG.md` festgehalten — Schliessen ohne Eintrag ist verboten.
+
 ---
 
 ## Changelog
 
+- **2026-05-28 — V1.3**: Sektion 12 (External Publish Review) ergänzt — macht den 3-Modell-Review (`gpt-5` + `gemini-3.1-pro-preview` + `sonar-pro` → Synthese via Claude über `~/moltstack/agents/ai_review.py`) zur Vorbedingung vor jeder Aktion, die ein Artefakt ausserhalb der MolTrust-Repos publik macht: (a) `npm publish` öffentlich, (b) PRs gegen Non-MolTrust-Repos, (c) Outreach-Mails an externe Empfänger. Lessons-Reaktion auf den moltrust-openclaw-v2-Sprint (Mai 2026): lokale Tests + `--dry-run` sind notwendig, aber nicht hinreichend. Geltungsbereich a/b/c explizit; interne Channels und Server-Deploys (§11) ausgenommen. Briefing-Template-Pflicht (Master in `~/moltstack/reviews/_templates/`), Blocker-/Major-Findings stoppen die Aktion.
 - **2026-05-19 — V1.2.1 (Patch)**: **§1.2–1.7** interne Pfade durchgängig von `~/moltstack/docs|audits/…` auf **repo-relativ** (`MoltyCel/moltrust-api`) korrigiert — gesamtes Kapitel §1 hat jetzt eine **konsistente** Pfadkonvention (kein Halb-Drift, den §11 verhindern soll). Selbstverortungs-Drift: WORKFLOW.md lebt in moltrust-api; das Server-Arbeitsverzeichnis `~/moltstack` ist verifiziert ein Checkout ebendieses Repos, kein eigenes Repo. Reine Pfad-Textkorrektur, keine §11-/Regeländerung.
 - **2026-05-19 — V1.2**: Sektion 11 (Repo-as-Source-of-Truth & Deploy-Disziplin) ergänzt — schliesst die **drei real passierten** moltrust-web-Reconcile-Drift-Ursachen (Server-Datei ohne Repo-Commit / Doku-Iteration nur im Chat / Zwei-Console-Worktree-Kollision) in **4 schlanken Regeln**: 11.1 Repo-first für versionierte Dateien (+ `post-sha==repo-sha`), 11.2 Iteration=Commit, 11.3 Worktree-Isolation + serieller Server-Zugriff, 11.4 Session-Start-Frischecheck — Schlüsselbegriffe je inline definiert. **Ehrliche Bereichsgrenze** im Intro: §11 regiert repo-verwaltete Dateien; Server-Infra (nginx/systemd/cron) bewusst out-of-scope (deklarierte Grenze, kein Schlupfloch). Weitere Härtung (Infra-Repo-Überführung, Build-/Supply-Chain-Integrität SLSA/NIST-SSDF, WORM-Audit-Repo, atomarer Lock, formaler Notfallpfad) als entkoppeltes `docs/BACKLOG.md`-Item festgehalten — kein §11-Blocker. Zusätzlich Selbstverortungs-Korrektur (Schlusszeile → kanonisches `MoltyCel/moltrust-api`). Durchlief 5 Entwurfs-Iterationen + 2 §2.3-Cross-Review-Runden (GPT-4o+Gemini+Perplexity): „GRUNDLEGEND ÜBERDENKEN" → „ÜBERARBEITEN" → Kernfragen (3 Ursachen geschlossen, Bereichsgrenze ehrlich) zweireviewer-bestätigt, Begriffs-Präzision final eingearbeitet.
 - **2026-05-13 — V1.1**: Sektion 6.2 (Secret-Leak-Detected) substantiell erweitert mit Multi-Storage-Audit-Checkliste (8 Speicherorte) und Post-Rotation-Verifikations-Step. Lesson 13.05.26 dokumentiert (MoltyCel-PAT-Rotation übersah `moltycelbot/secrets/GITHUB_PAT` → 24h 401-Storm). Sektion 10 Bootstrap-Items: completed-Markers für BACKLOG.md (V1.1+V1.2 fertig), Telegram-Token-Rotation, Memory #25 Korrektur. Bootstrap-Hinweis-Paragraph aus V1 bleibt erhalten (ungewollt im Initial-V1.1-Edit entfernt, via Follow-up-Commit restored).
@@ -462,4 +493,4 @@ Als erste Handlung an einem Repo: `git worktree list`, `git status` je Worktree,
 
 ---
 
-**Ende WORKFLOW.md V1.2.1. Dies ist ein lebendiges Dokument. Updates via PR auf das kanonische Repo `MoltyCel/moltrust-api` (Pfad `docs/WORKFLOW.md`) mit Changelog-Eintrag. Hinweis: „moltstack" bezeichnet anderswo im Dokument die Plattform/den Server-Arbeitsbereich (`~/moltstack/…`), NICHT den Repo-Ort dieses Dokuments.**
+**Ende WORKFLOW.md V1.3. Dies ist ein lebendiges Dokument. Updates via PR auf das kanonische Repo `MoltyCel/moltrust-api` (Pfad `docs/WORKFLOW.md`) mit Changelog-Eintrag. Hinweis: „moltstack" bezeichnet anderswo im Dokument die Plattform/den Server-Arbeitsbereich (`~/moltstack/…`), NICHT den Repo-Ort dieses Dokuments.**
