@@ -153,7 +153,7 @@ async def call_openai(client: httpx.AsyncClient, document: str, mode: str) -> di
     system_prompt = REVIEW_PROMPTS[mode]
     payload = {
         "model": "gpt-5",
-        "max_tokens": OPENAI_MAX_TOKENS,
+        "max_completion_tokens": OPENAI_MAX_TOKENS,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Hier ist das Dokument zur Review:\n\n{document}"}
