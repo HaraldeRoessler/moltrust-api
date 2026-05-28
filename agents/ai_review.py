@@ -47,9 +47,9 @@ OUTPUT_DIR = Path.home() / "moltstack" / "reviews"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Limits ───────────────────────────────────────────────────────────────────
-INPUT_CHAR_LIMIT = 60000       # Gemini 2.5 Flash: 1M ctx, GPT-4o: 128k — 60k chars is safe
-GPT4O_MAX_TOKENS = 4000        # v1 was 2000 — truncated long reviews
-GEMINI_MAX_TOKENS = 8000       # v1 was 4000 — caused incomplete Gemini reviews
+INPUT_CHAR_LIMIT = 60000       # gpt-5 + gemini-3.1-pro-preview: beide Pro-Tier mit großem Kontextfenster — 60k chars is safe
+OPENAI_MAX_TOKENS = 4000       # v1 was 2000 — truncated long reviews
+GEMINI_MAX_TOKENS = 16000      # Tier-Wechsel Flash→Pro (gemini-3.1-pro-preview); doppelter Headroom für vollständige Reviews
 PERPLEXITY_MAX_TOKENS = 4000
 CLAUDE_MAX_TOKENS = 4000       # v1 was 3000 — more room for 3-reviewer synthesis
 
@@ -99,8 +99,8 @@ PERPLEXITY_EXTRA = {
 }
 
 SYNTHESIS_PROMPT = """Du bist Lead-Reviewer bei MolTrust. Du hast Reviews von drei unabhängigen AI-Modellen zu demselben Dokument erhalten:
-- GPT-4o (OpenAI) — technische Analyse
-- Gemini 2.5 Flash (Google) — technische Analyse
+- GPT-5 (OpenAI) — technische Analyse
+- Gemini 3.1 Pro Preview (Google) — technische Analyse
 - Perplexity Sonar Pro — Analyse mit Echtzeit-Web-Recherche (Referenz-Checks, Aktualität)
 
 Deine Aufgabe: Synthetisiere alle drei Reviews in ein klares Entscheidungsdokument für den Gründer.
@@ -109,7 +109,7 @@ Strukturiere exakt so:
 
 # Synthesis Review — {label}
 **Datum:** {date}
-**Reviewer:** GPT-4o + Gemini 2.5 Flash + Perplexity Sonar Pro → Synthese via Claude
+**Reviewer:** GPT-5 + Gemini 3.1 Pro Preview + Perplexity Sonar Pro → Synthese via Claude
 
 ---
 
@@ -133,7 +133,7 @@ Klares Votum: FREIGEBEN / ÜBERARBEITEN / GRUNDLEGEND ÜBERDENKEN — mit 2-Satz
 
 ---
 
-GPT-4o Review:
+GPT-5 Review:
 {openai_review}
 
 Gemini Review:
@@ -146,14 +146,14 @@ Perplexity Review:
 # ── API Calls ────────────────────────────────────────────────────────────────
 
 async def call_openai(client: httpx.AsyncClient, document: str, mode: str) -> dict:
-    """GPT-4o Review Call"""
+    """GPT-5 Review Call"""
     if not OPENAI_KEY:
-        return {"model": "GPT-4o", "content": "ERROR: OPENAI_API_KEY nicht gesetzt", "error": True}
+        return {"model": "GPT-5", "content": "ERROR: OPENAI_API_KEY nicht gesetzt", "error": True}
 
     system_prompt = REVIEW_PROMPTS[mode]
     payload = {
-        "model": "gpt-4o",
-        "max_tokens": GPT4O_MAX_TOKENS,
+        "model": "gpt-5",
+        "max_tokens": OPENAI_MAX_TOKENS,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Hier ist das Dokument zur Review:\n\n{document}"}
@@ -171,15 +171,15 @@ async def call_openai(client: httpx.AsyncClient, document: str, mode: str) -> di
         data = resp.json()
         content = data["choices"][0]["message"]["content"]
         tokens = data.get("usage", {}).get("total_tokens", "?")
-        return {"model": "GPT-4o", "content": content, "tokens": tokens, "error": False}
+        return {"model": "GPT-5", "content": content, "tokens": tokens, "error": False}
     except Exception as e:
-        return {"model": "GPT-4o", "content": f"ERROR: {e}", "error": True}
+        return {"model": "GPT-5", "content": f"ERROR: {e}", "error": True}
 
 
 async def call_gemini(client: httpx.AsyncClient, document: str, mode: str) -> dict:
-    """Gemini 2.5 Flash Review Call — with retry on 503"""
+    """Gemini 3.1 Pro Preview Review Call — with retry on 503"""
     if not GEMINI_KEY:
-        return {"model": "Gemini 2.5 Flash", "content": "ERROR: GEMINI_API_KEY nicht gesetzt", "error": True}
+        return {"model": "Gemini 3.1 Pro Preview", "content": "ERROR: GEMINI_API_KEY nicht gesetzt", "error": True}
 
     system_prompt = REVIEW_PROMPTS[mode]
     combined_prompt = f"{system_prompt}\n\nHier ist das Dokument zur Review:\n\n{document}"
@@ -189,7 +189,7 @@ async def call_gemini(client: httpx.AsyncClient, document: str, mode: str) -> di
         "generationConfig": {"maxOutputTokens": GEMINI_MAX_TOKENS, "temperature": 0.3}
     }
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent"
 
     last_error = None
     for attempt in range(3):
@@ -204,14 +204,14 @@ async def call_gemini(client: httpx.AsyncClient, document: str, mode: str) -> di
             data = resp.json()
             content = data["candidates"][0]["content"]["parts"][0]["text"]
             tokens = data.get("usageMetadata", {}).get("totalTokenCount", "?")
-            return {"model": "Gemini 2.5 Flash", "content": content, "tokens": tokens, "error": False}
+            return {"model": "Gemini 3.1 Pro Preview", "content": content, "tokens": tokens, "error": False}
         except Exception as e:
             last_error = e
             if attempt < 2:
                 wait = 10 * (attempt + 1)
                 print(f"   Gemini error — retry {attempt+1}/2 in {wait}s...")
                 await asyncio.sleep(wait)
-    return {"model": "Gemini 2.5 Flash", "content": f"ERROR after 3 attempts: {last_error}", "error": True}
+    return {"model": "Gemini 3.1 Pro Preview", "content": f"ERROR after 3 attempts: {last_error}", "error": True}
 
 
 async def call_perplexity(client: httpx.AsyncClient, document: str, mode: str) -> dict:
@@ -313,7 +313,7 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
     print(f"   Dokument : {doc_path.name} ({word_count} Wörter)")
     print(f"   Label    : {label}")
     print(f"   Modus    : {mode}")
-    print(f"   Reviewer : GPT-4o + Gemini 2.5 Flash + Perplexity Sonar Pro")
+    print(f"   Reviewer : GPT-5 + Gemini 3.1 Pro Preview + Perplexity Sonar Pro")
     print(f"{'='*60}\n")
 
     if char_count > INPUT_CHAR_LIMIT:
@@ -322,7 +322,7 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
 
     async with httpx.AsyncClient() as client:
         # 1. Parallel Reviews — all three
-        print("📤 Sende an GPT-4o + Gemini + Perplexity (parallel)...")
+        print("📤 Sende an GPT-5 + Gemini + Perplexity (parallel)...")
         openai_task = call_openai(client, document, mode)
         gemini_task = call_gemini(client, document, mode)
         perplexity_task = call_perplexity(client, document, mode)
@@ -330,7 +330,7 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
             openai_task, gemini_task, perplexity_task
         )
 
-        print(f"   GPT-4o      : {'✅' if not openai_result['error'] else '❌'} ({openai_result.get('tokens', '?')} Tokens)")
+        print(f"   GPT-5      : {'✅' if not openai_result['error'] else '❌'} ({openai_result.get('tokens', '?')} Tokens)")
         print(f"   Gemini      : {'✅' if not gemini_result['error'] else '❌'} ({gemini_result.get('tokens', '?')} Tokens)")
         print(f"   Perplexity  : {'✅' if not perplexity_result['error'] else '❌'} ({perplexity_result.get('tokens', '?')} Tokens)")
 
@@ -353,7 +353,7 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
 **Generiert:** {datetime.datetime.now().strftime("%Y-%m-%d %H:%M UTC")}
 **Quelle:** {doc_path.name}
 **Modus:** {mode}
-**Reviewer:** GPT-4o + Gemini 2.5 Flash + Perplexity Sonar Pro → Claude Synthesis
+**Reviewer:** GPT-5 + Gemini 3.1 Pro Preview + Perplexity Sonar Pro → Claude Synthesis
 
 ---
 
@@ -364,14 +364,14 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
 ## Raw Reviews
 
 <details>
-<summary>GPT-4o Raw Review</summary>
+<summary>GPT-5 Raw Review</summary>
 
 {openai_result['content']}
 
 </details>
 
 <details>
-<summary>Gemini 2.5 Flash Raw Review</summary>
+<summary>Gemini 3.1 Pro Preview Raw Review</summary>
 
 {gemini_result['content']}
 
@@ -397,7 +397,7 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
             f"Modus: `{mode}`\n"
             f"Status: {status}\n"
             f"File: `{output_path.name}`\n\n"
-            f"Reviewer: GPT-4o + Gemini + Perplexity → Claude"
+            f"Reviewer: GPT-5 + Gemini + Perplexity → Claude"
         )
         await send_telegram(client, tg_msg)
         print("📱 Telegram Alert gesendet\n")
