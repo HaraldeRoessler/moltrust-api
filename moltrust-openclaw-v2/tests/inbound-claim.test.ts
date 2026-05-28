@@ -61,4 +61,30 @@ describe("inbound_claim", () => {
     const r = await h({ senderId: "alice@example.com" }, {});
     expect(r).toBeUndefined();
   });
+
+  it("fails CLOSED by default on lookup error (blocks the inbound)", async () => {
+    const h = makeInboundClaimHandler({
+      cfg: { ...DEFAULT_CONFIG, minTrustScore: 50 },
+      client: makeClient({}),
+      logger: stubLogger(),
+    });
+    const r = await h({ metadata: { did: "did:moltrust:unknown" } }, {});
+    expect(r?.handled).toBe(true);
+    expect(r?.reply?.content).toContain("lookup failed");
+    expect(r?.reply?.content).toContain("failOpen=false");
+  });
+
+  it("fails OPEN when failOpen=true (passes the inbound)", async () => {
+    const logger = stubLogger();
+    const h = makeInboundClaimHandler({
+      cfg: { ...DEFAULT_CONFIG, minTrustScore: 50, failOpen: true },
+      client: makeClient({}),
+      logger,
+    });
+    const r = await h({ metadata: { did: "did:moltrust:unknown" } }, {});
+    expect(r).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("failOpen=true"),
+    );
+  });
 });

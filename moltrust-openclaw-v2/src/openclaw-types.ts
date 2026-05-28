@@ -3,6 +3,12 @@
  * surface. Kept small and stable so the plugin doesn't break when upstream
  * tightens private fields. Track upstream in the close-comment of
  * openclaw/openclaw#49971 (commit 45146913007d).
+ *
+ * Tested OpenClaw version range: 0.9.x — 1.0.x (commit 45146913007d baseline).
+ * If you load this plugin into an OpenClaw build outside this range, the
+ * vendored hook signatures may diverge from the host's runtime expectations.
+ * On upstream-breaking changes, bump the plugin's minor version and update
+ * this anchor — do not silently expand the range.
  */
 
 // ─── Logger ──────────────────────────────────────────────────────────────────
@@ -155,6 +161,8 @@ export interface MolTrustConfig {
   installAllowlist?: string[];
   installBlocklist?: string[];
   cacheTtlMs?: number;
+  failOpen?: boolean;
+  registerMoltrustTools?: boolean;
 }
 
 export const DEFAULT_CONFIG: Required<MolTrustConfig> = {
@@ -167,5 +175,7 @@ export const DEFAULT_CONFIG: Required<MolTrustConfig> = {
   gateAllTools: false,
   installAllowlist: [],
   installBlocklist: [],
-  cacheTtlMs: 300_000,
+  cacheTtlMs: 10_000,
+  failOpen: false,
+  registerMoltrustTools: true,
 };

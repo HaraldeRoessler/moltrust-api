@@ -58,7 +58,16 @@ export default function register(api: OpenClawPluginApi): void {
   );
 
   // ── v1 surface preserved: tools / commands / RPC / CLI ─────────────────
-  api.registerTool?.({
+  // moltrust_* agent tools can be air-gapped via cfg.registerMoltrustTools=false
+  // (LLM-callable, so the riskier surface). Slash commands + RPC + CLI remain
+  // active regardless — those are explicit operator/user invocations.
+  if (!cfg.registerMoltrustTools) {
+    logger.info(
+      "[moltrust] registerMoltrustTools=false — moltrust_verify / moltrust_trust_score / moltrust_endorse NOT exposed as agent tools (air-gap mode). Slash commands + lifecycle hooks remain active.",
+    );
+  }
+
+  if (cfg.registerMoltrustTools) api.registerTool?.({
     name: "moltrust_verify",
     description:
       "Verify an AI agent's W3C DID identity against MolTrust. Returns verified status, trust score, and Verifiable Credential details.",
@@ -97,7 +106,7 @@ export default function register(api: OpenClawPluginApi): void {
     },
   });
 
-  api.registerTool?.({
+  if (cfg.registerMoltrustTools) api.registerTool?.({
     name: "moltrust_trust_score",
     description:
       "Get the MolTrust trust score (0-100) for an AI agent by DID or wallet address. Includes sybil detection and behavioral history.",
@@ -123,7 +132,7 @@ export default function register(api: OpenClawPluginApi): void {
     },
   });
 
-  api.registerTool?.({
+  if (cfg.registerMoltrustTools) api.registerTool?.({
     name: "moltrust_endorse",
     description:
       "Endorse another agent's skill via MolTrust SkillEndorsementCredential (W3C VC, 90-day expiry). Requires apiKey in plugin config.",

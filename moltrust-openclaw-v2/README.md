@@ -1,4 +1,4 @@
-# @moltrust/openclaw v2
+# @moltrust/openclaw-plugin v2
 
 > W3C DID trust verification + lifecycle gating for [OpenClaw](https://openclaw.ai)
 
@@ -7,10 +7,14 @@ v2 adds the four lifecycle hooks the OpenClaw core already exposes (per
 `before_tool_call`, `inbound_claim`, `gateway_start` — on top of the v1
 agent tools / slash commands / gateway RPC / CLI surface.
 
+> **Preview release.** v2.0.0-alpha.x is a public preview, not a Production
+> Trust-Gating release. See *Security Posture & Roadmap* below for the
+> v2.1 hardening list.
+
 ## Install
 
 ```bash
-openclaw plugins install @moltrust/openclaw
+openclaw plugins install @moltrust/openclaw-plugin
 ```
 
 Restart your gateway.
@@ -47,7 +51,9 @@ New tool: `moltrust_endorse` — issue a SkillEndorsementCredential (W3C VC,
           "gateAllTools": false,
           "installAllowlist": [],
           "installBlocklist": [],
-          "cacheTtlMs": 300000
+          "cacheTtlMs": 10000,
+          "failOpen": false,
+          "registerMoltrustTools": true
         }
       }
     }
@@ -61,8 +67,8 @@ Get an API key at [api.moltrust.ch/auth/signup](https://api.moltrust.ch/auth/sig
 
 ```
 src/
-├── openclaw-types.ts     vendored OpenClaw plugin SDK types (subset)
-├── client.ts             MolTrustClient + LRU cache (5 min TTL)
+├── openclaw-types.ts     vendored OpenClaw plugin SDK types (subset, range 0.9.x–1.0.x)
+├── client.ts             MolTrustClient + LRU cache (10 s TTL default)
 ├── utils.ts              extractDids / isLikelyDid
 ├── hooks/
 │   ├── before-install.ts     makeBeforeInstallHandler({cfg, logger})
@@ -79,17 +85,92 @@ unit-testable without an OpenClaw host.
 
 ```bash
 npm install
-npm test       # ≥15 vitest tests across hooks + client
+npm test       # vitest — hooks + client (>= 27 tests)
 npm run build  # produces dist/*.js + *.d.ts
 ```
 
-## Fail-open on lookup errors
+## Security Posture & Roadmap
 
-`before_tool_call` and `inbound_claim` log a warning and **do not block** when
-a MolTrust API lookup fails (network down, rate limit, etc.). This is a
-deliberate design choice: a transient trust-API outage shouldn't take an
-agent fleet offline. Operators should monitor the warn-log for sustained
-failures.
+### Fail-closed by default (v2.0.0-alpha.1)
+
+When a MolTrust API lookup fails (network, rate-limit, 5xx), `before_tool_call`
+and `inbound_claim` **block the call/inbound** with a clear `blockReason`
+mentioning `failOpen=false`. This is the default — safe for Production
+Trust-Gating.
+
+Opt-in fail-open is available via `failOpen: true` for fleets where
+availability matters more than trust-gating (e.g. internal dev environments,
+non-financial tools). Set it explicitly and monitor the warn-log.
+
+### Response signature verification — planned for v2.1
+
+This release does **not** verify the Ed25519 JWS signatures that
+`api.moltrust.ch` returns on trust-score and verify responses (kid
+`moltrust-registry-2026-v1`). It trusts HTTPS + JSON parsing.
+
+In MITM-capable environments (Corporate-Proxy with custom CA, routing
+manipulation, compromised edge node) an attacker could forge ALLOW/DENY
+decisions. The fail-closed default mitigates the most common attack path
+("API unreachable, fall through"), but does not stop active in-line
+manipulation.
+
+JWS verification is on the v2.1 roadmap as a dedicated design sprint
+(JWKS bootstrap, key rotation, failure-mode spec). See [ADR
+0001](../docs/decisions/0001-openclaw-jws-response-verification-deferred.md)
+in the parent MolTrust API repo for the full reasoning.
+
+### Cache TTL
+
+Default `cacheTtlMs: 10000` (10 seconds). Tunes revocation latency vs.
+API-call volume. Lower it to 0 to disable caching entirely; raise it only
+if your `minTrustScore` threshold is well above the worst-case score of any
+agent you'd permit (i.e. cache cannot mask a decision flip).
+
+### OpenClaw version range
+
+The plugin vendors a subset of OpenClaw's plugin SDK types
+(`src/openclaw-types.ts`) pinned to the upstream signature baseline at
+commit `45146913007d` (tested range: 0.9.x – 1.0.x). On host versions
+outside this range the hook contracts may diverge silently. Bump-and-test
+when upstream cuts a breaking minor.
+
+## Privacy & Data Handling
+
+This plugin sends agent DIDs and (optionally) wallet addresses to
+`api.moltrust.ch` for trust-score lookups. Specifically:
+
+- **`before_tool_call`** sends your `agentDid` plus any DIDs found in the
+  tool call's `params` (via `did:*` regex on string values).
+- **`inbound_claim`** sends the sender DID extracted from
+  `event.metadata.did` or `event.senderId`.
+- **`gateway_start`** sends `agentDid` only if `verifyOnStart: true`.
+- The `moltrust_verify` / `moltrust_trust_score` / `moltrust_endorse` tools
+  send whichever DID/address the calling agent passes as the argument.
+
+**Endpoint:** `https://api.moltrust.ch` (configurable via `apiUrl` —
+self-hosting documented separately).
+
+**Retention:** the MolTrust service stores trust-score lookups per the
+operator's privacy policy at [moltrust.ch/privacy](https://moltrust.ch/privacy)
+(MolTrust as data processor; you remain controller for your fleet's DIDs).
+
+**Disabling automatic outbound calls:** set `minTrustScore: 0` and
+`verifyOnStart: false`. The lifecycle hooks then make no outbound calls.
+However, the `moltrust_verify` / `moltrust_trust_score` / `moltrust_endorse`
+agent tools remain **registered with the agent runtime** — an LLM
+hallucination or unintended chain-of-thought could still trigger them.
+
+**True air-gap mode:** additionally set `registerMoltrustTools: false`.
+The three `moltrust_*` agent tools are then **not exposed to the agent
+runtime at all** — the LLM cannot invoke them. Slash commands
+(`/trust`, `/trustscore`) and the gateway RPC methods remain available
+for explicit operator/user invocations.
+
+This is a trust-verification plugin — *intentional* use requires sending
+DIDs to MolTrust. There is no way to gate agents on remote trust scores
+without that round-trip. If you need air-gapped trust gating, set
+`minTrustScore: 0` + `verifyOnStart: false` + `registerMoltrustTools: false`
+and rely only on the (manual) slash commands for ad-hoc lookups.
 
 ## License
 
