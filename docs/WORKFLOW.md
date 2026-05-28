@@ -1,7 +1,7 @@
 # WORKFLOW.md — MolTrust Operational Discipline
 
-**Status:** V1.1, lebendiges Dokument
-**Letzte Aktualisierung:** 2026-05-13
+**Status:** V1.3, lebendiges Dokument
+**Letzte Aktualisierung:** 2026-05-28
 **Eigentümer:** Lars (Entscheidungen) + Claude/Claude Code (Ausführung gemäß diesem Dokument)
 **Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol) plus die Bot-/Agent-Infrastruktur
 
