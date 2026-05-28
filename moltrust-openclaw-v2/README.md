@@ -52,7 +52,8 @@ New tool: `moltrust_endorse` — issue a SkillEndorsementCredential (W3C VC,
           "installAllowlist": [],
           "installBlocklist": [],
           "cacheTtlMs": 10000,
-          "failOpen": false
+          "failOpen": false,
+          "registerMoltrustTools": true
         }
       }
     }
@@ -153,14 +154,23 @@ self-hosting documented separately).
 operator's privacy policy at [moltrust.ch/privacy](https://moltrust.ch/privacy)
 (MolTrust as data processor; you remain controller for your fleet's DIDs).
 
-**Disabling:** set `minTrustScore: 0` and `verifyOnStart: false`. The plugin
-then makes no outbound calls except when the `moltrust_*` tools are
-explicitly invoked.
+**Disabling automatic outbound calls:** set `minTrustScore: 0` and
+`verifyOnStart: false`. The lifecycle hooks then make no outbound calls.
+However, the `moltrust_verify` / `moltrust_trust_score` / `moltrust_endorse`
+agent tools remain **registered with the agent runtime** — an LLM
+hallucination or unintended chain-of-thought could still trigger them.
 
-This is a trust-verification plugin — running it inherently means sending
+**True air-gap mode:** additionally set `registerMoltrustTools: false`.
+The three `moltrust_*` agent tools are then **not exposed to the agent
+runtime at all** — the LLM cannot invoke them. Slash commands
+(`/trust`, `/trustscore`) and the gateway RPC methods remain available
+for explicit operator/user invocations.
+
+This is a trust-verification plugin — *intentional* use requires sending
 DIDs to MolTrust. There is no way to gate agents on remote trust scores
-without that round-trip. If you need air-gapped trust gating, this plugin
-is not the right fit.
+without that round-trip. If you need air-gapped trust gating, set
+`minTrustScore: 0` + `verifyOnStart: false` + `registerMoltrustTools: false`
+and rely only on the (manual) slash commands for ad-hoc lookups.
 
 ## License
 

@@ -66,6 +66,11 @@
         "type": "boolean",
         "default": false,
         "description": "When a MolTrust API lookup fails (network, rate limit, 5xx), what to do? false (default) = block the call/message (fail-closed, safe). true = warn-log and pass through (fail-open, opt-in for low-criticality fleets where availability beats trust-gating). See ADR 0001."
+      },
+      "registerMoltrustTools": {
+        "type": "boolean",
+        "default": true,
+        "description": "Register the moltrust_verify / moltrust_trust_score / moltrust_endorse agent tools? Default true. Set false for true air-gapping: tools won't be exposed to the agent runtime, so LLM hallucinations cannot trigger outbound DID lookups. Slash commands and lifecycle hooks are unaffected."
       }
     }
   },
@@ -76,6 +81,7 @@
     "agentDid": { "label": "Your Agent DID", "placeholder": "did:moltrust:..." },
     "verifyOnStart": { "label": "Self-verify on gateway start" },
     "gateAllTools": { "label": "Gate ALL tools (not just sensitive prefixes)" },
-    "failOpen": { "label": "Fail-open on API lookup error (opt-in — fail-closed is safer)" }
+    "failOpen": { "label": "Fail-open on API lookup error (opt-in — fail-closed is safer)" },
+    "registerMoltrustTools": { "label": "Register moltrust_* agent tools (set false for air-gap)" }
   }
 }

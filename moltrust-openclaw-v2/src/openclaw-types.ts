@@ -162,6 +162,7 @@ export interface MolTrustConfig {
   installBlocklist?: string[];
   cacheTtlMs?: number;
   failOpen?: boolean;
+  registerMoltrustTools?: boolean;
 }
 
 export const DEFAULT_CONFIG: Required<MolTrustConfig> = {
@@ -176,4 +177,5 @@ export const DEFAULT_CONFIG: Required<MolTrustConfig> = {
   installBlocklist: [],
   cacheTtlMs: 10_000,
   failOpen: false,
+  registerMoltrustTools: true,
 };

@@ -85,20 +85,28 @@ export function makeBeforeToolCallHandler(deps: BeforeToolCallDeps) {
       }
     }
 
-    // Check 2: counterparty DIDs in params
+    // Check 2: counterparty DIDs in params.
+    // Lookups run in parallel via Promise.allSettled — sequential await per
+    // counterparty was O(N × API-latency) and could add 200ms+ to a 4-DID
+    // tool call. Block-priority is deterministic: first counterparty in
+    // array order whose result triggers a block wins.
     const counterparties = extractDids(event.params).filter(
       (d) => d !== cfg.agentDid,
     );
-    for (const did of counterparties) {
-      try {
-        const score = await client.getTrustScore(did);
-        if (score.score < cfg.minTrustScore) {
-          const reason = `[moltrust] tool ${toolName} blocked: counterparty ${did} score ${score.score} < threshold ${cfg.minTrustScore}`;
+    const results = await Promise.allSettled(
+      counterparties.map((did) => client.getTrustScore(did)),
+    );
+    for (let i = 0; i < counterparties.length; i++) {
+      const did = counterparties[i];
+      const r = results[i];
+      if (r.status === "fulfilled") {
+        if (r.value.score < cfg.minTrustScore) {
+          const reason = `[moltrust] tool ${toolName} blocked: counterparty ${did} score ${r.value.score} < threshold ${cfg.minTrustScore}`;
           logger.warn(reason);
           return { block: true, blockReason: reason };
         }
-      } catch (err) {
-        const msg = (err as Error).message;
+      } else {
+        const msg = (r.reason as Error).message;
         if (cfg.failOpen) {
           logger.warn(
             `[moltrust] counterparty ${did} lookup failed (failOpen=true, allowing): ${msg}`,

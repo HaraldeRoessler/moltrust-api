@@ -203,4 +203,31 @@ describe("before_tool_call", () => {
     expect(r?.blockReason).toContain("counterparty");
     expect(r?.blockReason).toContain("failOpen=false");
   });
+
+  it("combinatorial: own DID OK + counterparty lookup fails + failOpen=true → ALLOW", async () => {
+    const logger = stubLogger();
+    const h = makeBeforeToolCallHandler({
+      cfg: {
+        ...DEFAULT_CONFIG,
+        minTrustScore: 50,
+        agentDid: "did:moltrust:self",
+        failOpen: true,
+      },
+      client: makeClient({ "did:moltrust:self": 90 }),
+      logger,
+    });
+    const r = await h(
+      {
+        toolName: "pay_send",
+        params: { to: "did:moltrust:unknown" },
+      },
+      {},
+    );
+    expect(r).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "counterparty did:moltrust:unknown lookup failed (failOpen=true",
+      ),
+    );
+  });
 });

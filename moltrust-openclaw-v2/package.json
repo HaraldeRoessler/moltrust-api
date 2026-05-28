@@ -1,6 +1,6 @@
 {
   "name": "@moltrust/openclaw-plugin",
-  "version": "2.0.0-alpha.1",
+  "version": "2.0.0-alpha.2",
   "description": "MolTrust v2 trust-provider plugin for OpenClaw — lifecycle hooks for install / tool-call / inbound / gateway-start gating, plus W3C DID identity verification, trust scoring, sybil detection. Fail-closed by default.",
   "keywords": [
     "openclaw",
