@@ -11,8 +11,12 @@
  *   - toolName not in any cfg.sensitivePrefixes AND cfg.gateAllTools is false
  *   - cfg.minTrustScore <= 0 (opt-in design)
  *
- * Failure mode: lookup errors fail-OPEN by design (warn-log, don't block).
- * Returns {block: true, blockReason} on actual policy violation.
+ * Failure mode (lookup errors — network, rate-limit, 5xx): controlled by
+ * cfg.failOpen. Default cfg.failOpen=false → fail-CLOSED: block the call
+ * with a clear blockReason ("API unreachable"). Opt-in cfg.failOpen=true →
+ * warn-log and pass through (legacy v2.0.0-alpha.0 behavior, only for fleets
+ * where availability beats trust-gating). See ADR 0001 + README "Security
+ * Posture & Roadmap".
  */
 import type { MolTrustClient } from "../client.js";
 import type {
@@ -68,10 +72,16 @@ export function makeBeforeToolCallHandler(deps: BeforeToolCallDeps) {
           return { block: true, blockReason: reason };
         }
       } catch (err) {
-        logger.warn(
-          `[moltrust] own DID score lookup failed: ${(err as Error).message}`,
-        );
-        // fail-open
+        const msg = (err as Error).message;
+        if (cfg.failOpen) {
+          logger.warn(
+            `[moltrust] own DID score lookup failed (failOpen=true, allowing): ${msg}`,
+          );
+        } else {
+          const reason = `[moltrust] tool ${toolName} blocked: own DID ${cfg.agentDid} score lookup failed and failOpen=false: ${msg}`;
+          logger.warn(reason);
+          return { block: true, blockReason: reason };
+        }
       }
     }
 
@@ -88,10 +98,16 @@ export function makeBeforeToolCallHandler(deps: BeforeToolCallDeps) {
           return { block: true, blockReason: reason };
         }
       } catch (err) {
-        logger.warn(
-          `[moltrust] counterparty ${did} lookup failed: ${(err as Error).message}`,
-        );
-        // fail-open: skip this counterparty
+        const msg = (err as Error).message;
+        if (cfg.failOpen) {
+          logger.warn(
+            `[moltrust] counterparty ${did} lookup failed (failOpen=true, allowing): ${msg}`,
+          );
+        } else {
+          const reason = `[moltrust] tool ${toolName} blocked: counterparty ${did} score lookup failed and failOpen=false: ${msg}`;
+          logger.warn(reason);
+          return { block: true, blockReason: reason };
+        }
       }
     }
 

@@ -10,8 +10,10 @@
  *   - if cfg.minTrustScore <= 0 → no-op
  *   - fetch trust score; if below threshold → return handled+warn-reply
  *
- * Failure mode: lookup errors fail-open (don't block message delivery on a
- * transient API failure).
+ * Failure mode (lookup errors): controlled by cfg.failOpen. Default
+ * cfg.failOpen=false → fail-CLOSED: block the inbound claim with a warn-reply
+ * (handled: true). Opt-in cfg.failOpen=true → warn-log and pass through.
+ * See ADR 0001 + README "Security Posture & Roadmap".
  */
 import type { MolTrustClient } from "../client.js";
 import type {
@@ -52,10 +54,17 @@ export function makeInboundClaimHandler(deps: InboundClaimDeps) {
         return { handled: true, reply: { content: `⚠️ ${reason}` } };
       }
     } catch (err) {
-      logger.warn(
-        `[moltrust] inbound DID ${senderDid} lookup failed: ${(err as Error).message}`,
-      );
-      // fail-open
+      const msg = (err as Error).message;
+      if (cfg.failOpen) {
+        logger.warn(
+          `[moltrust] inbound DID ${senderDid} lookup failed (failOpen=true, allowing): ${msg}`,
+        );
+        // fall through to undefined (allow)
+      } else {
+        const reason = `Inbound message from ${senderDid} blocked: trust score lookup failed and failOpen=false: ${msg}`;
+        logger.warn(`[moltrust] ${reason}`);
+        return { handled: true, reply: { content: `⚠️ ${reason}` } };
+      }
     }
     return undefined;
   };

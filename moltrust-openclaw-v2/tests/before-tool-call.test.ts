@@ -141,7 +141,7 @@ describe("before_tool_call", () => {
     expect(r?.block).toBe(true);
   });
 
-  it("fails open on lookup error (warns but does not block)", async () => {
+  it("fails CLOSED by default on lookup error (blocks the call)", async () => {
     const logger = stubLogger();
     const h = makeBeforeToolCallHandler({
       cfg: {
@@ -152,10 +152,55 @@ describe("before_tool_call", () => {
       client: makeClient({}),
       logger,
     });
-    const r = await h({ toolName: "pay_send", params: {} }, {});
-    expect(r).toBeUndefined();
+    const r = (await h({ toolName: "pay_send", params: {} }, {})) as
+      | Block
+      | undefined;
+    expect(r?.block).toBe(true);
+    expect(r?.blockReason).toContain("failOpen=false");
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("lookup failed"),
     );
+  });
+
+  it("fails OPEN when failOpen=true is explicitly set (allows the call)", async () => {
+    const logger = stubLogger();
+    const h = makeBeforeToolCallHandler({
+      cfg: {
+        ...DEFAULT_CONFIG,
+        minTrustScore: 50,
+        agentDid: "did:moltrust:unknown",
+        failOpen: true,
+      },
+      client: makeClient({}),
+      logger,
+    });
+    const r = await h({ toolName: "pay_send", params: {} }, {});
+    expect(r).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("failOpen=true"),
+    );
+  });
+
+  it("fails CLOSED on counterparty lookup error (default)", async () => {
+    const logger = stubLogger();
+    const h = makeBeforeToolCallHandler({
+      cfg: {
+        ...DEFAULT_CONFIG,
+        minTrustScore: 50,
+        agentDid: "did:moltrust:self",
+      },
+      client: makeClient({ "did:moltrust:self": 90 }),
+      logger,
+    });
+    const r = (await h(
+      {
+        toolName: "pay_send",
+        params: { to: "did:moltrust:unknown" },
+      },
+      {},
+    )) as Block | undefined;
+    expect(r?.block).toBe(true);
+    expect(r?.blockReason).toContain("counterparty");
+    expect(r?.blockReason).toContain("failOpen=false");
   });
 });
