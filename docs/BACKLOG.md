@@ -1,7 +1,7 @@
 # BACKLOG.md — MolTrust Open Items
 
-**Status:** V1.7, lebendiges Dokument
-**Letzte Aktualisierung:** 2026-05-22
+**Status:** V1.8, lebendiges Dokument
+**Letzte Aktualisierung:** 2026-05-28
 **Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol)
 **Definiert durch:** WORKFLOW.md Sektion 1.7
 
@@ -86,6 +86,13 @@
 ---
 
 ## Medium
+
+### openclaw-plugin Rate-Limit-Strategie für parallelisierte Counterparty-Lookups
+- **Status:** Open
+- **Aufwand:** M
+- **Added:** 2026-05-28
+- **Source:** `@moltrust/openclaw-plugin@2.0.0-alpha.2` §12-Re-Re-Review (Run 2026-05-28 17:41 UTC, `~/moltstack/reviews/20260528_174139_openclaw-plugin-v2.0.0-alpha.2_review.md`), Aktionsliste #5
+- **Details:** Mit der alpha.2-Umstellung auf `Promise.allSettled` in `moltrust-openclaw-v2/src/hooks/before-tool-call.ts` werden alle Counterparty-Lookups parallel gefeuert. Bei vielen gleichzeitig aktiven Agents mit vielen Counterparties pro Tool-Call kann das Burst-Last gegen die MolTrust-API erzeugen (Rate-Limit-Triggering). Bei typischen N (1-4 DIDs/Call) unkritisch; bei großen Counterparty-Listen → Strategie-Entscheidung: Soft-Cap (z.B. `maxConcurrentLookups: 10` Config), Batch-Queue oder Server-Side-Rate-Limit-Aware-Backoff. Erst nach Beobachtung echter Last priorisieren.
 
 ### §11-Härtung & Infra-Repo-Überführung (aus §11-Cross-Reviews, bewusst aus V4 ausgeklammert)
 - **Status:** Open
@@ -313,6 +320,41 @@
 
 ## Low
 
+### openclaw-plugin Test #1 — Own-DID Early-Exit Proof
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-28
+- **Source:** `@moltrust/openclaw-plugin@2.0.0-alpha.2` §12-Re-Re-Review, Aktionsliste #1 — für v2.0.0-beta/RC
+- **Details:** Test in `moltrust-openclaw-v2/tests/before-tool-call.test.ts`: wenn `cfg.agentDid` Score < `minTrustScore` UND `failOpen=false`, dann werden Counterparty-Lookups NICHT mehr aufgerufen (early-exit-Semantik). Verifikation: Spy/Mock auf `client.getTrustScore` mit Aufruf-Count=1 (nur own-DID). Formale Test-Absicherung der Optimierung, die heute nur durch Code-Inspection gestützt ist.
+
+### openclaw-plugin Test #2 — Mixed-State Counterparties + failOpen=true
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-28
+- **Source:** `@moltrust/openclaw-plugin@2.0.0-alpha.2` §12-Re-Re-Review, Aktionsliste #2 — für v2.0.0-beta/RC
+- **Details:** Test in `moltrust-openclaw-v2/tests/before-tool-call.test.ts`: Counterparty-Array `[OK, FAIL, OK]` + `failOpen=true` → erwartet ALLOW (Single-Failure ist mit failOpen=true transitiv nicht blockierend). Regression-Schutz für die `Promise.allSettled`-Umstellung in alpha.2.
+
+### openclaw-plugin Block-Priority README-Dokumentation
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-28
+- **Source:** `@moltrust/openclaw-plugin@2.0.0-alpha.2` §12-Re-Re-Review, Aktionsliste #3 — für v2.0.0-beta/RC
+- **Details:** Inline-Kommentar in `before-tool-call.ts` dokumentiert „Block-priority is deterministic: first counterparty in array order whose result triggers a block wins" — Operator-facing README sollte das explizit aufnehmen (eigener Abschnitt „Operator Semantics" oder unter „Security Posture & Roadmap"). Operator-Erwartung: identischer Input → identischer Block-Output, auch bei mehreren parallel-blockenden Counterparties.
+
+### openclaw-plugin Multi-Counterparty-Block Logging-Enhancement
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-28
+- **Source:** `@moltrust/openclaw-plugin@2.0.0-alpha.2` §12-Re-Re-Review, Aktionsliste #4 — für v2.0.0-beta/RC
+- **Details:** Bei Multi-Counterparty-Block (mehrere fails parallel via `Promise.allSettled`) loggt aktuell nur die erste blockierende Counterparty (die per array-order-Priority „gewinnt"). Für Operator-Debugging hilfreich: zusätzliche Warn-Log-Einträge mit Index für alle anderen problematischen Counterparties, damit Operator das volle Bild sieht statt nur den ersten Block.
+
+### openclaw-plugin „Silent Enforcer"-Pattern in README dokumentieren
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-28
+- **Source:** `@moltrust/openclaw-plugin@2.0.0-alpha.2` §12-Re-Re-Review, Aktionsliste #6
+- **Details:** Die Config-Kombination `registerMoltrustTools: false` + `minTrustScore > 0` ist ein legitimes „Silent Enforcer / Defense-in-Depth"-Pattern: LLM kann keine MolTrust-Tools triggern, aber Lifecycle-Hooks blocken trotzdem unzulässige Tool-Calls anhand vorhandener Trust-Daten/Caches. Reviewer-Konsens (GPT-5 + Perplexity, alpha.2-Review) bestätigte das Pattern explizit als sinnvoll. Sollte in README als „Best Practice"-Snippet aufgenommen werden (eigener kleiner Abschnitt unter Privacy oder Security Posture).
+
 ### MoltGuard CONFORMANCE.md-Drift-Check via CI
 - **Status:** Open
 - **Aufwand:** S
@@ -493,6 +535,10 @@
 
 ## Changelog
 
+- **2026-05-28 — V1.8**: Sechs Items aufgenommen aus dem §12-Re-Re-Review von `@moltrust/openclaw-plugin@2.0.0-alpha.2` (Synthesis-Votum FREIGEBEN; alle 6 Items von den Reviewern explizit als „nicht release-blockierend" klassifiziert, für v2.0.0-beta/RC bzw. unbounded Backlog). Quelle: `~/moltstack/reviews/20260528_174139_openclaw-plugin-v2.0.0-alpha.2_review.md`.
+  - **Neu Medium (1):** openclaw-plugin Rate-Limit-Strategie für parallelisierte Counterparty-Lookups (Aktion #5) — erst nach Beobachtung echter Last priorisieren.
+  - **Neu Low (5):** Test-Coverage Own-DID Early-Exit Proof (#1), Test-Coverage Mixed-State Counterparties + failOpen=true (#2), Block-Priority README-Dokumentation (#3), Multi-Counterparty-Block Logging-Enhancement (#4), „Silent Enforcer"-Pattern in README dokumentieren (#6).
+  - **Kontext:** Drei-Iterations-Sprint (alpha.0 → alpha.1 → alpha.2) mit jeweiligem 3-Modell-§12-Review (gpt-5 + gemini-3.1-pro-preview + sonar-pro). Alpha.2 explizit zur npm-Publikation freigegeben; diese 6 Items adressieren was Reviewer als „polish/regression protection für beta/RC" markiert haben.
 - **2026-05-22 — V1.7**: Ein Low-Item aufgenommen — `compute_phase2_score`-Härtung (depth-Doku, Timeout-Bound, Exception-Handling der geteilten Graph-Traversal-Funktion). Ausgelagert aus dem §2.3-Cross-Review `s121-a2a-card-fix` (#3/#4), out-of-scope des Sprint-1.2.1-Handler-Fix.
 - **2026-05-22 — V1.6**: Ein Medium-Item aufgenommen — Pre-push Secret-Audit-Hook, struktureller Schutz gegen die im Incident INC-2026-05-22-test-key-exposure aufgedeckte Leak-Klasse (Secret im Public-Repo). Quelle: `docs/incidents/2026-05-22_test-key-exposure.md` §9. (`**Status:**`-Zeile auf V1.6 nachgezogen — war seit V1.5 stale.)
 - **2026-05-22 — V1.5**: Ein Low-Item aufgenommen — Voll-Secret-Scan moltrust-api Full-History, als Vorbedingung für einen etwaigen späteren History-Rewrite. Ausgelagert aus dem Test-Key-Incident Phase-2-SPEC (`docs/specs/2026-05-22_test-key-history-scrub-SPEC.md`); dort Option C gewählt (kein Rewrite, nur Working-Tree-Redact von `pentest.sh`).
