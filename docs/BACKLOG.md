@@ -1,6 +1,6 @@
 # BACKLOG.md — MolTrust Open Items
 
-**Status:** V1.8, lebendiges Dokument
+**Status:** V1.9, lebendiges Dokument
 **Letzte Aktualisierung:** 2026-05-28
 **Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol)
 **Definiert durch:** WORKFLOW.md Sektion 1.7
@@ -86,6 +86,20 @@
 ---
 
 ## Medium
+
+### CLAUDE.md TechSpec-Versionsdrift (v0.3 gelistet, v0.8.1 live)
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-28
+- **Source:** Opus-4.8-Session 2026-05-28 (Webroot-vs-CLAUDE.md-Abgleich)
+- **Details:** Global `~/.claude/CLAUDE.md` Whitepaper-Tabelle listet „TechSpec v0.3“ als live; `/var/www/html/` führt bis `MolTrust_Protocol_TechSpec_v0.8.1.pdf` (2026-05-25) — 7 Minor-Versionen stale. Zu tun: (1) Public-Download-Link + `sitemap.xml`/`llms.txt` gegen v0.8.1 prüfen, (2) CLAUDE.md-Zeile aktualisieren. Hinweis: CLAUDE.md ist nicht repo-verwaltet (§11 N/A), reine Memory/Config-Korrektur.
+
+### Dirty Working Tree auf Server-main (§4.2-Verstoß)
+- **Status:** Open
+- **Aufwand:** M
+- **Added:** 2026-05-28
+- **Source:** Opus-4.8-Session 2026-05-28 (`git status ~/moltstack` während BACKLOG-Drift-Sprint)
+- **Details:** Der live-serving Checkout `~/moltstack` steht auf `main` mit uncommitteten Änderungen: modified `scripts/threadwatch.py` + `scripts/threadwatch_config.yaml`; untracked `audits/2026-05-14_onboarding-verification.md`, `audits/2026-05-15_api-versioning.md`, `audits/2026-05-15_webroot-reconcile.md`, `ietf-submission/`, `migrations/add_outcome_tracker.sql`, `scripts/blog_index_selfheal.sh`. §4.2-Working-Tree-Hygiene-Verstoß auf dem shared Anchor. Klären: committen, in eigenen Branch auslagern oder verwerfen — **wem gehören die `threadwatch`-Änderungen?** Bis zur Klärung nicht in andere Sprints mitschleppen.
 
 ### openclaw-plugin Rate-Limit-Strategie für parallelisierte Counterparty-Lookups
 - **Status:** Open
@@ -320,6 +334,13 @@
 
 ## Low
 
+### Memory-Pfaddrift: WORKFLOW.md-Speicherort
+- **Status:** Open
+- **Aufwand:** S
+- **Added:** 2026-05-28
+- **Source:** Opus-4.8-Session 2026-05-28
+- **Details:** Annahme/Memory referenziert `~/moltstack/moltrust-api/docs/WORKFLOW.md`; kanonischer Pfad ist `~/moltstack/docs/WORKFLOW.md` (kein `moltrust-api/`-Unterverzeichnis — `~/moltstack` IST der moltrust-api-Checkout, siehe WORKFLOW.md §1.2.1-Changelog). Memory-Eintrag korrigieren.
+
 ### openclaw-plugin Test #1 — Own-DID Early-Exit Proof
 - **Status:** Open
 - **Aufwand:** S
@@ -485,6 +506,13 @@
 
 ## Deferred (Decision Required Before Activation)
 
+### ERC-8004 ValidationRegistry nicht implementiert (nur Identity + Reputation)
+- **Status:** Deferred (Decision Required — ERC-8004-Validation-Support überhaupt gewünscht?)
+- **Aufwand:** M
+- **Added:** 2026-05-28
+- **Source:** Opus-4.8 Code/Spec-Audit 2026-05-28 (`app/erc8004.py` + TechSpec v0.8.1 §6)
+- **Details:** `app/erc8004.py` verdrahtet nur 2 der 3 ERC-8004-Registries: Identity (`0x8004A169…a432`, on-chain write `register()`) + Reputation (`0x8004BAa1…9b63`, write `giveFeedback()`). **Kein ValidationRegistry** (grep `ValidationRegistry`/`validation_response`/`VALIDATION_REGISTRY` leer). `/identity/erc8004/validate` ist read-only Resolve (`ownerOf`/`tokenURI`/`getAgentWallet`/`getSummary`, alle `.call()`), kein on-chain Write. TechSpec §6 On-Chain-Anchoring ist bewusst **chain-agnostisch** (eigenes `MolTrust/<event>/<v> SHA256:<hash>`-Calldata-Format), NICHT ERC-8004-Validation. **Decision offen:** ERC-8004-Validation bauen oder bewusst nicht. **Guard bis dahin:** weder agent-card noch A2A-Thread noch Spec-Pitch dürfen ERC-8004-*Validation* behaupten (Proof-of-Work-Disziplin) — Identity + Reputation sind belegt, Validation nicht.
+
 ### B2C Prediction-Market Edge-Tool (Polymarket+Kalshi)
 - **Status:** Deferred (separater Geschäftsmodell-Discovery-Chat)
 - **Aufwand:** L
@@ -535,6 +563,7 @@
 
 ## Changelog
 
+- **2026-05-28 — V1.9**: Vier Drift-Findings aus Opus-4.8-Audit-Session aufgenommen. **Neu Deferred (1):** ERC-8004 ValidationRegistry nicht implementiert (nur Identity+Reputation belegt) — Decision offen + Proof-of-Work-Guard gegen Validation-Claims. **Neu Medium (2):** CLAUDE.md TechSpec-Versionsdrift (v0.3 gelistet vs v0.8.1 live), Dirty Working Tree auf Server-main (§4.2). **Neu Low (1):** Memory-Pfaddrift WORKFLOW.md-Speicherort. Quelle: Code/Spec-Audit + `git status ~/moltstack` 2026-05-28.
 - **2026-05-28 — V1.8**: Sechs Items aufgenommen aus dem §12-Re-Re-Review von `@moltrust/openclaw-plugin@2.0.0-alpha.2` (Synthesis-Votum FREIGEBEN; alle 6 Items von den Reviewern explizit als „nicht release-blockierend" klassifiziert, für v2.0.0-beta/RC bzw. unbounded Backlog). Quelle: `~/moltstack/reviews/20260528_174139_openclaw-plugin-v2.0.0-alpha.2_review.md`.
   - **Neu Medium (1):** openclaw-plugin Rate-Limit-Strategie für parallelisierte Counterparty-Lookups (Aktion #5) — erst nach Beobachtung echter Last priorisieren.
   - **Neu Low (5):** Test-Coverage Own-DID Early-Exit Proof (#1), Test-Coverage Mixed-State Counterparties + failOpen=true (#2), Block-Priority README-Dokumentation (#3), Multi-Counterparty-Block Logging-Enhancement (#4), „Silent Enforcer"-Pattern in README dokumentieren (#6).
