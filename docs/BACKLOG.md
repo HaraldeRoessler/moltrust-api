@@ -1,7 +1,7 @@
 # BACKLOG.md — MolTrust Open Items
 
-**Status:** V1.10, lebendiges Dokument
-**Letzte Aktualisierung:** 2026-05-28
+**Status:** V1.11, lebendiges Dokument
+**Letzte Aktualisierung:** 2026-05-29
 **Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol)
 **Definiert durch:** WORKFLOW.md Sektion 1.7
 
@@ -513,6 +513,8 @@
 - **Source:** Opus-4.8 Code/Spec-Audit 2026-05-28 (`app/erc8004.py` + TechSpec v0.8.1 §6)
 - **Details:** `app/erc8004.py` verdrahtet nur 2 der 3 ERC-8004-Registries: Identity (`0x8004A169…a432`, on-chain write `register()`) + Reputation (`0x8004BAa1…9b63`, write `giveFeedback()`). **Kein ValidationRegistry** (grep `ValidationRegistry`/`validation_response`/`VALIDATION_REGISTRY` leer). `/identity/erc8004/validate` ist read-only Resolve (`ownerOf`/`tokenURI`/`getAgentWallet`/`getSummary`, alle `.call()`), kein on-chain Write. TechSpec §6 On-Chain-Anchoring ist bewusst **chain-agnostisch** (eigenes `MolTrust/<event>/<v> SHA256:<hash>`-Calldata-Format), NICHT ERC-8004-Validation. **Decision offen:** ERC-8004-Validation bauen oder bewusst nicht. **Guard bis dahin:** weder agent-card noch A2A-Thread noch Spec-Pitch dürfen ERC-8004-*Validation* behaupten (Proof-of-Work-Disziplin) — Identity + Reputation sind belegt, Validation nicht.
 - **Update 2026-05-29 (On-Chain-Provenienz, Base mainnet — `eth_getStorageAt` EIP-1967 + Blockscout):** Die MolTrust-Proxies fahren die **echten offiziellen ERC-8004-Referenz-Impls**: Identity `0x8004A169…` → Impl `0x7274e874…` (`IdentityRegistryUpgradeable`), Reputation `0x8004BAa1…` → Impl `0x16e0FA7f…` (`ReputationRegistryUpgradeable`). Für Identity+Reputation damit **faktisch ERC-8004-konform** (Referenz-Logik hinter eigenen Proxies an nicht-kanonischen Adressen; kein Fork, keine Custom-Logik; `erc8004.py` referenziert die kanonischen Singletons bewusst nicht). Die **kanonischen Vanity-Singletons** (`0x8004A818`/`0x8004B663`/`0x8004Cb1B`) zeigen auf Base mainnet noch auf den **MinimalUUPS-Platzhalter** (`0xd53de688…`) — nicht auf echte Logik upgegradet. **Validation:** weiterhin komplett abwesend (kein eigener Proxy, keine Referenz); selbst der kanonische Validation-Proxy ist noch MinimalUUPS, „sich darauf berufen“ wäre hohl → **Proof-of-Work-Guard bleibt nur hier scharf**. **Konsistenter Build-Weg falls gewünscht:** eigener Proxy → offizielle Validation-Impl `0xDB31f5d9167f8ebc8B30FbBF814c4d297c2D7F99` (gleiche Mechanik wie Identity/Reputation).
+- **KORREKTUR (2026-05-29, V1.11 — ersetzt #91-Aussage):** Proxies 0x8004A169…/0x8004BAa1… sind FREMD-OWNED — owner() = 0x547289…062603 (offizieller erc-8004-Deployer, hardcoded im Public-Repo), NICHT MolTrust. MolTrust ist reiner KONSUMENT dieser fremd-deployten, offiziell-geownten Registries (ruft register()/giveFeedback() mit eigenem BASE_WRITE_KEY). Frühere Aussage „eigene Proxies" war falsch.
+- **Validation-Weg dadurch neu gefasst:** MolTrust kann NICHTS „unter derselben Ownership" ergänzen, da es Identity/Reputation nicht ownt. Zwei Optionen: (1) abhängig von 0x5472 warten/anfragen bis Owner eine Validation-Registry bereitstellt (out of hand), oder (2) eigene MolTrust-geownte Validation-Registry deployen → dann bewusst eigenständig/nicht-kanonisch. Decision-Required.
 
 ### B2C Prediction-Market Edge-Tool (Polymarket+Kalshi)
 - **Status:** Deferred (separater Geschäftsmodell-Discovery-Chat)
@@ -564,6 +566,7 @@
 
 ## Changelog
 
+- **2026-05-29 — V1.11**: Korrektur zu #91 — ERC-8004-Proxies (0x8004A169/0x8004BAa1) sind fremd-owned (owner()=0x547289…, offizieller erc-8004-Deployer), MolTrust ist Konsument, nicht Owner. Validation-Weg neu gefasst (Ownership-Entscheidung statt nur Deploy).
 - **2026-05-29 — V1.10**: ERC-8004-Deferred-Item um On-Chain-Provenienz präzisiert (Base mainnet, `eth_getStorageAt` EIP-1967 + Blockscout): MolTrust-Identity/Reputation-Proxies fahren die echten offiziellen Referenz-Impls (`0x7274e874…`/`0x16e0FA7f…`) → faktisch konform; kanonische Singletons noch MinimalUUPS; nur Validation fehlt → Guard bleibt dort scharf; konsistenter Build-Weg = eigener Proxy → offizielle Validation-Impl `0xDB31f5d9…`.
 - **2026-05-28 — V1.9**: Vier Drift-Findings aus Opus-4.8-Audit-Session aufgenommen. **Neu Deferred (1):** ERC-8004 ValidationRegistry nicht implementiert (nur Identity+Reputation belegt) — Decision offen + Proof-of-Work-Guard gegen Validation-Claims. **Neu Medium (2):** CLAUDE.md TechSpec-Versionsdrift (v0.3 gelistet vs v0.8.1 live), Dirty Working Tree auf Server-main (§4.2). **Neu Low (1):** Memory-Pfaddrift WORKFLOW.md-Speicherort. Quelle: Code/Spec-Audit + `git status ~/moltstack` 2026-05-28.
 - **2026-05-28 — V1.8**: Sechs Items aufgenommen aus dem §12-Re-Re-Review von `@moltrust/openclaw-plugin@2.0.0-alpha.2` (Synthesis-Votum FREIGEBEN; alle 6 Items von den Reviewern explizit als „nicht release-blockierend" klassifiziert, für v2.0.0-beta/RC bzw. unbounded Backlog). Quelle: `~/moltstack/reviews/20260528_174139_openclaw-plugin-v2.0.0-alpha.2_review.md`.
