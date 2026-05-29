@@ -373,6 +373,42 @@ def crawl_repo(gh, repo, since_iso):
     return results
 
 
+def crawl_discussion(gh, repo, number):
+    """Fetch one GitHub Discussion + its comments as an issue-like tuple.
+
+    Discussions live at a different REST endpoint than issues
+    (/repos/{owner}/{repo}/discussions/{n}) and are NOT returned by the
+    /repos/{owner}/{repo}/issues listing crawl_repo uses — so pinned
+    discussions need an explicit fetch.
+
+    The discussion dict is shape-compatible with the issue dict
+    classify_threads consumes (number/title/body/user/created_at/
+    updated_at/html_url), so downstream logic doesn't fork. Comments
+    are paginated up to max_pages=5 (= up to 500) since high-traffic
+    discussions easily exceed the 100/page single-call cap that
+    crawl_repo lives with for normal issues.
+    """
+    log.info(f"crawl {repo}#discussion-{number}")
+    try:
+        disc, _ = gh.get(
+            f"https://api.github.com/repos/{repo}/discussions/{number}"
+        )
+    except Exception as e:
+        log.warning(f"discussion {repo}#{number}: {e}")
+        return None
+    if not isinstance(disc, dict) or disc.get("number") is None:
+        log.warning(f"discussion {repo}#{number}: unexpected payload")
+        return None
+    comments = gh.get_paginated(
+        f"https://api.github.com/repos/{repo}/discussions/{number}/comments",
+        params={"per_page": 100},
+        max_pages=5,
+    )
+    if not isinstance(comments, list):
+        comments = []
+    return (disc, comments)
+
+
 # ─── Thread classification ────────────────────────────────────────────────────
 
 def classify_threads(repo_results, config, now):
@@ -706,6 +742,20 @@ def main():
             repo_results.append((repo, r))
         except Exception as e:
             log.warning(f"crawl {repo} failed: {e}")
+
+    # 3b. Crawl pinned discussions. Discussions don't appear in /issues,
+    # so each one needs an explicit fetch driven by config.watch_discussions.
+    for disc_cfg in config.get("watch_discussions", []) or []:
+        drepo, dnum = disc_cfg.get("repo"), disc_cfg.get("number")
+        if not drepo or dnum is None:
+            log.warning(f"watch_discussions entry missing repo/number: {disc_cfg}")
+            continue
+        try:
+            item = crawl_discussion(gh, drepo, dnum)
+            if item:
+                repo_results.append((drepo, [item]))
+        except Exception as e:
+            log.warning(f"crawl discussion {drepo}#{dnum} failed: {e}")
 
     # 4. Classify threads
     all_threads = classify_threads(repo_results, config, now)

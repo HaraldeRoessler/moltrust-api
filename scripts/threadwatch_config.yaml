@@ -96,3 +96,12 @@ agent_health:
   # VCOne suspension check (account public 404 + no events for N hours)
   vcone_account: VCOne-AI
   vcone_stale_hours: 48
+
+# Pinned GitHub Discussions to crawl. Discussions live at a different
+# REST endpoint than issues (/repos/{owner}/{repo}/discussions/{n}) and
+# don't appear in the /issues listing, so each one needs an explicit
+# entry here. Format: list of {repo, number, note}.
+watch_discussions:
+  - repo: a2aproject/A2A
+    number: 741
+    note: "principal-authority-chain — Lars-Kommentar, chopmob-Reply"
