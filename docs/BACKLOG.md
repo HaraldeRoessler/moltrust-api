@@ -1,6 +1,6 @@
 # BACKLOG.md — MolTrust Open Items
 
-**Status:** V1.12, lebendiges Dokument
+**Status:** V1.13, lebendiges Dokument
 **Letzte Aktualisierung:** 2026-05-29
 **Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol)
 **Definiert durch:** WORKFLOW.md Sektion 1.7
@@ -566,8 +566,14 @@
 
 ---
 
+## ERC-8004 / Standardisierung — Einbringungs-Kanal (Decision Required, 2026-05-29)
+- **Befund:** ERC-8004 On-Chain-Visibility kein lohnender Hebel jetzt — aktives Feld ~50 Agents, MT-Käufer (Compliance) suchen nicht dort, Feedback-Volumen-Aufbau = Flywheel-Henne-Ei. Self-Feedback bei Trust-Anbieter gefährlich.
+- **Wertvoller Hebel = eigene Präsenz bei den Entscheidern:** MT selbst sichtbar werden wo die ERC-8004-Spec entsteht — ethereum-magicians.org/t/erc-8004-trustless-agents/25098 + erc-8004-contracts GH-Issues/PRs + LinkedIn der Autoren. Ziel: bei De Rossi (MetaMask), Crapis (EF), Ellis (Google), Reppel (Coinbase) bekannt sein, BEVOR Validation-Spec finalisiert wird — um sich als Behavioral-Trust-Validator einzubringen statt vor vollendete Tatsachen gestellt zu werden. Pfund: laufende produktive Identity+Reputation-Integration auf Base (#33553).
+- **NEXT (eigene Session):** (1) sachlicher fachlicher Beitrag in der ethereum-magicians ERC-8004-Diskussion mit dem Behavioral-Trust-Layer-Blickwinkel; (2) Issue/Kommentar an erc-8004-contracts wenn fachlich substanziell; (3) LinkedIn-Sichtbarkeit bei den 4 Autoren. Kein Pitch — fachliche Präsenz, damit MT bei Validation-Spec-Finalisierung auf dem Schirm ist.
+
 ## Changelog
 
+- **2026-05-29 — V1.13**: ERC-8004-Einbringungs-Kanal dokumentiert — On-Chain-Visibility kein Hebel (Feld ~50 aktiv, Self-Feedback gefährlich); wertvoller Weg = eigene fachliche Präsenz in der ethereum-magicians-Diskussion (bei den 4 Spec-Autoren bekannt werden vor Validation-Finalisierung). NEXT eigene BD-Session.
 - **2026-05-29 — V1.12**: ERC-8004-Validation final — permissionless aber keine scharfe Registry auf Base (kanonische auf MinimalUUPS, Key bei 0x5472); Validation-Sprint vom Tisch bis Upgrade. Ökosystem-Report #73: echter Sichtbarkeits-Hebel = Feedback+x402, nicht Validation.
 - **2026-05-29 — V1.11**: Korrektur zu #91 — ERC-8004-Proxies (0x8004A169/0x8004BAa1) sind fremd-owned (owner()=0x547289…, offizieller erc-8004-Deployer), MolTrust ist Konsument, nicht Owner. Validation-Weg neu gefasst (Ownership-Entscheidung statt nur Deploy).
 - **2026-05-29 — V1.10**: ERC-8004-Deferred-Item um On-Chain-Provenienz präzisiert (Base mainnet, `eth_getStorageAt` EIP-1967 + Blockscout): MolTrust-Identity/Reputation-Proxies fahren die echten offiziellen Referenz-Impls (`0x7274e874…`/`0x16e0FA7f…`) → faktisch konform; kanonische Singletons noch MinimalUUPS; nur Validation fehlt → Guard bleibt dort scharf; konsistenter Build-Weg = eigener Proxy → offizielle Validation-Impl `0xDB31f5d9…`.
