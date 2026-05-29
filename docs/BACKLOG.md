@@ -568,8 +568,8 @@
 
 ## ERC-8004 / Standardisierung — Einbringungs-Kanal (Decision Required, 2026-05-29)
 - **Befund:** ERC-8004 On-Chain-Visibility kein lohnender Hebel jetzt — aktives Feld ~50 Agents, MT-Käufer (Compliance) suchen nicht dort, Feedback-Volumen-Aufbau = Flywheel-Henne-Ei. Self-Feedback bei Trust-Anbieter gefährlich.
-- **Wertvoller Hebel = personeller Kanal:** aeoess (Tymofii) ist in BEIDEN Welten aktiv — A2A-Threads + ERC-8004-contracts-PRs (#77/#79) — und bestätigter MT-Partner (End-to-End-Validation). Realistischer Weg in ethereum-magicians ERC-8004-Diskussion (Autoren: De Rossi/MetaMask, Crapis/EF, Ellis/Google, Reppel/Coinbase) OHNE kaltes Anklopfen. Pfund: laufende produktive Identity+Reputation-Integration auf Base + Behavioral-Trust-Layer.
-- **NEXT (eigene Session, BD nicht Engineering):** über aeoess anschlussfähig machen; Ziel-Diskussion ethereum-magicians.org/t/erc-8004-trustless-agents/25098.
+- **Wertvoller Hebel = eigene Präsenz bei den Entscheidern:** MT selbst sichtbar werden wo die ERC-8004-Spec entsteht — ethereum-magicians.org/t/erc-8004-trustless-agents/25098 + erc-8004-contracts GH-Issues/PRs + LinkedIn der Autoren. Ziel: bei De Rossi (MetaMask), Crapis (EF), Ellis (Google), Reppel (Coinbase) bekannt sein, BEVOR Validation-Spec finalisiert wird — um sich als Behavioral-Trust-Validator einzubringen statt vor vollendete Tatsachen gestellt zu werden. Pfund: laufende produktive Identity+Reputation-Integration auf Base (#33553).
+- **NEXT (eigene Session):** (1) sachlicher fachlicher Beitrag in der ethereum-magicians ERC-8004-Diskussion mit dem Behavioral-Trust-Layer-Blickwinkel; (2) Issue/Kommentar an erc-8004-contracts wenn fachlich substanziell; (3) LinkedIn-Sichtbarkeit bei den 4 Autoren. Kein Pitch — fachliche Präsenz, damit MT bei Validation-Spec-Finalisierung auf dem Schirm ist.
 
 ## Changelog
 
