@@ -1,6 +1,6 @@
 # BACKLOG.md — MolTrust Open Items
 
-**Status:** V1.13, lebendiges Dokument
+**Status:** V1.14, lebendiges Dokument
 **Letzte Aktualisierung:** 2026-05-29
 **Geltungsbereich:** Alle MolTrust-Repos (moltstack, moltguard, moltrust-protocol)
 **Definiert durch:** WORKFLOW.md Sektion 1.7
@@ -568,11 +568,13 @@
 
 ## ERC-8004 / Standardisierung — Einbringungs-Kanal (Decision Required, 2026-05-29)
 - **Befund:** ERC-8004 On-Chain-Visibility kein lohnender Hebel jetzt — aktives Feld ~50 Agents, MT-Käufer (Compliance) suchen nicht dort, Feedback-Volumen-Aufbau = Flywheel-Henne-Ei. Self-Feedback bei Trust-Anbieter gefährlich.
-- **Wertvoller Hebel = eigene Präsenz bei den Entscheidern:** MT selbst sichtbar werden wo die ERC-8004-Spec entsteht — ethereum-magicians.org/t/erc-8004-trustless-agents/25098 + erc-8004-contracts GH-Issues/PRs + LinkedIn der Autoren. Ziel: bei De Rossi (MetaMask), Crapis (EF), Ellis (Google), Reppel (Coinbase) bekannt sein, BEVOR Validation-Spec finalisiert wird — um sich als Behavioral-Trust-Validator einzubringen statt vor vollendete Tatsachen gestellt zu werden. Pfund: laufende produktive Identity+Reputation-Integration auf Base (#33553).
-- **NEXT (eigene Session):** (1) sachlicher fachlicher Beitrag in der ethereum-magicians ERC-8004-Diskussion mit dem Behavioral-Trust-Layer-Blickwinkel; (2) Issue/Kommentar an erc-8004-contracts wenn fachlich substanziell; (3) LinkedIn-Sichtbarkeit bei den 4 Autoren. Kein Pitch — fachliche Präsenz, damit MT bei Validation-Spec-Finalisierung auf dem Schirm ist.
+- **Wertvoller Hebel = eigener fachlicher Beitrag in ethereum-magicians ERC-8004-Thread (25098):** Offene Kernfrage dort = Reputation-AGGREGATION (single score „dangerous/monopolistic" — daniel-ospina/spengrah; Marco-MetaMask fragt AKTIV: „let's challenge this rationale, welche Use-Cases, welche Daten on-chain"). v2-Spec mit „enhanced validation" in Entwicklung (Mainnet seit 29.01.2026). MT-Bauraum exakt: laufendes gewichtetes Anti-Collusion-Modell (Sybil-Penalty, Jaccard-Cluster) in Produktion auf Base = Praxis-Evidenz wo Thread nur Theorie hat.
+- **KERN-THESE (von Lars, das fehlende Element im Thread):** Es gibt keine statisch „richtige" Trust-Aggregation — Angriffs-/Fehlervektoren verändern sich DYNAMISCH, jede heute bewiesene Formel ist morgen umgangen. Die A2A-Community braucht JETZT eine praktikable, zuverlässige Lösung mit genug Flexibilität für schnelle Anpassung an neue Vektoren OHNE Spec-Amendment/Konsens. Chain-agnostische off-chain Attestation IST dieser Anpassungs-Mechanismus (Logik im Validator → Reaktion in Stunden statt Monaten). Adressiert direkt das Spec-Eigenrisiko „manipulation/adversarial coordination over time" das die Spec heute nur an Entwickler delegiert. Enterprise-Bedarf (GF will schnell/einfach/günstig/zuverlässig, nicht theoretisch final) = WARUM es jetzt zählt — aber FACHLICH verpacken (Adaptierbarkeit in nicht-stationären Bedrohungsräumen), nicht als Vertrieb (Forum = Protokoll-Idealisten, Anti-Intellektualismus-Falle vermeiden).
+  - **NEXT (eigene Session):** (1) vollständige spätere Thread-Seiten lesen (Fetch griff nur S.1, JS-Pagination — v2-Validation-Stand seit Mainnet-Launch); (2) Beitrag ausformulieren: Praxis-Evidenz (Swarm-Modell-Trade-offs) + These (Adaptierbarkeit schlägt Eleganz im dynamischen Vektorraum); (3) durch Review-Engine §12 (gpt-5+gemini-3.1-pro-preview+sonar-pro) gegen „fachlich wasserdicht + NICHT als Werbung lesbar"; (4) posten mit validem Rückkanal. Forum-Form, MT-Substanz.
 
 ## Changelog
 
+- **2026-05-29 — V1.14**: ERC-8004-magicians-Beitrag als lebender Strang (ersetzt aeoess-Kanal) — offene Aggregations-/Kollusionsfrage = MT-Bauraum (laufendes Anti-Collusion-Modell als Praxis-Evidenz); Kern-These Adaptierbarkeit>Eleganz im dynamischen Vektorraum + Enterprise-Bedarf; NEXT eigene Session via Review-Engine vor Posting.
 - **2026-05-29 — V1.13**: ERC-8004-Einbringungs-Kanal dokumentiert — On-Chain-Visibility kein Hebel (Feld ~50 aktiv, Self-Feedback gefährlich); wertvoller Weg = eigene fachliche Präsenz in der ethereum-magicians-Diskussion (bei den 4 Spec-Autoren bekannt werden vor Validation-Finalisierung). NEXT eigene BD-Session.
 - **2026-05-29 — V1.12**: ERC-8004-Validation final — permissionless aber keine scharfe Registry auf Base (kanonische auf MinimalUUPS, Key bei 0x5472); Validation-Sprint vom Tisch bis Upgrade. Ökosystem-Report #73: echter Sichtbarkeits-Hebel = Feedback+x402, nicht Validation.
 - **2026-05-29 — V1.11**: Korrektur zu #91 — ERC-8004-Proxies (0x8004A169/0x8004BAa1) sind fremd-owned (owner()=0x547289…, offizieller erc-8004-Deployer), MolTrust ist Konsument, nicht Owner. Validation-Weg neu gefasst (Ownership-Entscheidung statt nur Deploy).
