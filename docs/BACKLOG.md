@@ -573,7 +573,7 @@
 
 ## Changelog
 
-- **2026-05-29 — V1.13**: ERC-8004-Einbringungs-Kanal dokumentiert — On-Chain-Visibility kein Hebel (Feld ~50 aktiv, Self-Feedback gefährlich); wertvoller Weg = personeller Kanal via aeoess/Tymofii in ethereum-magicians-Diskussion. NEXT eigene BD-Session.
+- **2026-05-29 — V1.13**: ERC-8004-Einbringungs-Kanal dokumentiert — On-Chain-Visibility kein Hebel (Feld ~50 aktiv, Self-Feedback gefährlich); wertvoller Weg = eigene fachliche Präsenz in der ethereum-magicians-Diskussion (bei den 4 Spec-Autoren bekannt werden vor Validation-Finalisierung). NEXT eigene BD-Session.
 - **2026-05-29 — V1.12**: ERC-8004-Validation final — permissionless aber keine scharfe Registry auf Base (kanonische auf MinimalUUPS, Key bei 0x5472); Validation-Sprint vom Tisch bis Upgrade. Ökosystem-Report #73: echter Sichtbarkeits-Hebel = Feedback+x402, nicht Validation.
 - **2026-05-29 — V1.11**: Korrektur zu #91 — ERC-8004-Proxies (0x8004A169/0x8004BAa1) sind fremd-owned (owner()=0x547289…, offizieller erc-8004-Deployer), MolTrust ist Konsument, nicht Owner. Validation-Weg neu gefasst (Ownership-Entscheidung statt nur Deploy).
 - **2026-05-29 — V1.10**: ERC-8004-Deferred-Item um On-Chain-Provenienz präzisiert (Base mainnet, `eth_getStorageAt` EIP-1967 + Blockscout): MolTrust-Identity/Reputation-Proxies fahren die echten offiziellen Referenz-Impls (`0x7274e874…`/`0x16e0FA7f…`) → faktisch konform; kanonische Singletons noch MinimalUUPS; nur Validation fehlt → Guard bleibt dort scharf; konsistenter Build-Weg = eigener Proxy → offizielle Validation-Impl `0xDB31f5d9…`.
