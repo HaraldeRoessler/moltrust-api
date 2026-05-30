@@ -1441,6 +1441,7 @@ async def get_trust_score(did: str):
             # CAEP: sign deterministic minimal payload with registry key
             if score_response["computed_at"] and score_response["valid_until"]:
                 from app.signature import sign_payload, build_score_signing_payload, build_registry_jws
+                from app.registry_keys import REGISTRY_KID
                 signing_payload = build_score_signing_payload(
                     did=score_response["did"],
                     trust_score=score_response["trust_score"],
@@ -1449,7 +1450,7 @@ async def get_trust_score(did: str):
                     policy_version=score_response["evaluation_context"]["policy_version"],
                 )
                 score_response["registry_signature"] = sign_payload(signing_payload)
-                score_response["registry_jws"] = build_registry_jws(signing_payload, kid='moltrust-registry-2026-v1')
+                score_response["registry_jws"] = build_registry_jws(signing_payload, kid=REGISTRY_KID)
             return score_response
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -3706,13 +3707,18 @@ async def credits_deposit_info(request: Request):
     }
 
 
-# Helper: lazy-load + cache public agent card
+# Helper: lazy-load + cache public agent card.
+# Card is signed at first-load with the registry Ed25519 key and the
+# signed copy is what gets cached and served. Cache invalidates on
+# `systemctl restart moltstack.service` — same lifecycle as the
+# webroot edit flow.
 _AGENT_CARD_CACHE = None
 def _load_public_agent_card():
     global _AGENT_CARD_CACHE
     if _AGENT_CARD_CACHE is None:
+        from app.signature import sign_agent_card
         with open("/var/www/html/.well-known/agent-card.json", "r") as f:
-            _AGENT_CARD_CACHE = json.load(f)
+            _AGENT_CARD_CACHE = sign_agent_card(json.load(f))
     return _AGENT_CARD_CACHE
 
 
