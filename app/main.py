@@ -666,6 +666,21 @@ def validate_did(did: str) -> str:
         raise HTTPException(400, "Invalid DID format. Expected: did:moltrust:<16 hex chars>")
     return did
 
+
+def validate_did_lookup(did: str) -> str:
+    """Permissive DID validator for read-only lookup endpoints.
+
+    Accepts the strict 16-hex format AND legacy/vanity seed DIDs that
+    predate the strict convention (e.g. `did:moltrust:ambassador0001`).
+    Use this for any GET endpoint that takes a DID as a path parameter
+    and only READS the trust-graph. Writes (register/rate/issue) must
+    keep `validate_did()` — they enforce the canonical format for new
+    identities.
+    """
+    if not DID_LOOKUP_PATTERN.match(did):
+        raise HTTPException(400, "Invalid DID format. Expected: did:moltrust:<a-z0-9_-, 1-64 chars>")
+    return did
+
 def verify_api_key(x_api_key: str = Header(alias="X-API-Key")):
     if len(x_api_key) > 128:
         raise HTTPException(403, "Invalid API key")
@@ -1133,7 +1148,7 @@ async def auth_with_moltbook(request: Request, body: MoltbookAuthRequest):
 @app.get("/identity/verify/{did}")
 @limiter.limit("30/minute")
 async def verify_agent(request: Request, did: str = Path(max_length=40)):
-    did = validate_did(did)
+    did = validate_did_lookup(did)
     result = {"did": did, "verified": False, "reputation": 0.0}
     if db_pool:
         async with db_pool.acquire() as conn:
@@ -1169,7 +1184,7 @@ async def get_identity_badge(request: Request, did: str = Path(max_length=80)):
       ignores but other consumers (klaw gateway, etc.) may use.
     """
     from app.swarm.trust_score import compute_phase2_score, score_to_grade
-    did = validate_did(did)
+    did = validate_did_lookup(did)
     if not db_pool:
         raise HTTPException(503, "database not available")
     async with db_pool.acquire() as conn:
@@ -1262,7 +1277,7 @@ async def get_identity_badge_svg(request: Request, did: str = Path(max_length=80
 @app.get("/reputation/query/{did}")
 @limiter.limit("30/minute")
 async def get_reputation(request: Request, did: str = Path(max_length=40)):
-    did = validate_did(did)
+    did = validate_did_lookup(did)
     result = {"did": did, "score": 0.0, "total_ratings": 0}
     if db_pool:
         async with db_pool.acquire() as conn:
@@ -3541,7 +3556,7 @@ async def credits_pricing(request: Request):
 @app.get("/credits/balance/{did}")
 @limiter.limit("60/minute")
 async def credits_balance(request: Request, did: str = Path(max_length=40)):
-    did = validate_did(did)
+    did = validate_did_lookup(did)
     balance = 0
     if db_pool:
         async with db_pool.acquire() as conn:
@@ -3585,7 +3600,7 @@ async def credits_transfer(request: Request, body: CreditTransferRequest, api_ke
 @app.get("/credits/transactions/{did}")
 @limiter.limit("30/minute")
 async def credits_transactions(request: Request, did: str = Path(max_length=40), api_key: str = Depends(verify_api_key), limit: int = Query(default=50, ge=1, le=200), offset: int = Query(default=0, ge=0)):
-    did = validate_did(did)
+    did = validate_did_lookup(did)
     if not db_pool:
         raise HTTPException(503, "Database unavailable")
 
@@ -3661,7 +3676,7 @@ async def credits_deposit(request: Request, body: DepositRequest, api_key: str =
 @limiter.limit("30/minute")
 async def credits_deposit_history(request: Request, did: str = Path(max_length=40), api_key: str = Depends(verify_api_key)):
     """Get USDC deposit history for an agent."""
-    did = validate_did(did)
+    did = validate_did_lookup(did)
     if not db_pool:
         raise HTTPException(503, "Database unavailable")
     async with db_pool.acquire() as conn:
@@ -3946,7 +3961,7 @@ async def erc8004_registration_file(request: Request, did: str = Path(max_length
             {"score": 0.0, "total_ratings": 0},
             MOLTRUST_PLATFORM_AGENT_ID
         )
-    did = validate_did(did)
+    did = validate_did_lookup(did)
     if not db_pool:
         raise HTTPException(503, "Database unavailable")
     async with db_pool.acquire() as conn:
@@ -4311,7 +4326,7 @@ class ManualSettleRequest(BaseModel):
 async def sports_predict_history(request: Request, did: str = Path(max_length=40),
                                   x_api_key: str = Depends(verify_api_key)):
     """Get prediction history and stats for an agent."""
-    did = validate_did(did)
+    did = validate_did_lookup(did)
 
     if not db_pool:
         raise HTTPException(503, "Database unavailable")
@@ -4806,7 +4821,7 @@ async def fantasy_lineup_settle(request: Request,
 async def fantasy_history(request: Request, did: str = Path(max_length=64),
                            x_api_key: str = Depends(verify_api_key)):
     """Get fantasy lineup history and ROI stats for an agent."""
-    did = validate_did(did)
+    did = validate_did_lookup(did)
 
     if not db_pool:
         raise HTTPException(503, "Database unavailable")
