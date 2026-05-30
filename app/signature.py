@@ -49,3 +49,32 @@ def build_score_signing_payload(
         "valid_until": valid_until,
         "policy_version": policy_version,
     }
+
+
+def sign_agent_card(card: dict, kid: str = REGISTRY_KID) -> dict:
+    """Return `card` augmented with an A2A v1.0.1 `signatures[]` entry.
+
+    Per the A2A spec, AgentCardSignature is `{protected, signature}` —
+    NOT a compact JWS string. `protected` is the base64url JCS-canonical
+    JWS header; `signature` is the base64url raw Ed25519 signature over
+    `signing_input = f"{protected_b64}.{payload_b64}"` (RFC 7515 §5.1).
+
+    The payload is the AgentCard with any existing `signatures` field
+    stripped — otherwise the signature would cover itself recursively.
+    """
+    card_to_sign = {k: v for k, v in card.items() if k != "signatures"}
+    payload_b64 = _b64url_encode(canonicalize(card_to_sign))
+
+    header = {"alg": "EdDSA", "kid": kid, "typ": "a2a-card+jws"}
+    protected_b64 = _b64url_encode(canonicalize(header))
+
+    signing_input = f"{protected_b64}.{payload_b64}".encode("ascii")
+    sig = get_private_key().sign(signing_input)
+    signature_b64 = _b64url_encode(sig)
+
+    return {
+        **card_to_sign,
+        "signatures": [
+            {"protected": protected_b64, "signature": signature_b64},
+        ],
+    }
