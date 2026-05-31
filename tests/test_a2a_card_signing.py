@@ -118,3 +118,46 @@ def test_protected_header_shape():
     assert header["alg"] == "EdDSA", "Ed25519 is EdDSA in JOSE"
     assert header["kid"] == REGISTRY_KID, f"kid must be {REGISTRY_KID}"
     assert header["typ"] == "a2a-card+jws", "A2A spec media type"
+
+
+# ---------------------------------------------------------------------------
+# 6. Augmentation-after-signing drift regression — catches the PR #99 bug
+#    that this hotfix repairs.
+#
+#    PR #99 placed the signing inside _load_public_agent_card (sign once
+#    at cache-load), but `/extendedAgentCard` then *augmented* the cached
+#    card with endorsement + MoltGuard fields before returning. The
+#    delivered card therefore differed from what was signed, and any
+#    external verifier rejected the signature.
+#
+#    Pure-unit test (no TestClient): simulate the two flows side-by-side.
+# ---------------------------------------------------------------------------
+
+def test_buggy_sign_before_augment_drift_is_caught_by_verify():
+    """Reproduce the PR #99 bug pattern: sign first, augment second.
+    A consumer verifying the augmented response MUST reject the signature
+    because the canonicalized payload no longer matches what was signed."""
+    from cryptography.exceptions import InvalidSignature
+
+    base = dict(SAMPLE_CARD)
+    signed_pre = sign_agent_card(base)
+    # Simulate /extendedAgentCard augmenting AFTER the loader-side sign
+    # — exactly what PR #99 did with `**public_card` + skill append.
+    augmented_pre = {
+        **signed_pre,
+        "skills": signed_pre.get("skills", []) + [{"id": "endorsement"}],
+    }
+    with pytest.raises(InvalidSignature):
+        _verify_signed_card(augmented_pre)
+
+
+def test_correct_augment_then_sign_verifies():
+    """Reproduce the hotfix pattern: augment first, sign on the final
+    body. Verifier must accept."""
+    base = dict(SAMPLE_CARD)
+    augmented_first = {
+        **base,
+        "skills": base.get("skills", []) + [{"id": "endorsement"}],
+    }
+    signed_post = sign_agent_card(augmented_first)
+    assert _verify_signed_card(signed_post) is True
