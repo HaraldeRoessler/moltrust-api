@@ -1,5 +1,6 @@
 # ADR D3 — MANDATE Runtime Enforcement (v3)
-**Status:** PROPOSAL — für 3. 3-Reviewer-Runde (C1-Konsens). NICHT akzeptiert. HARD GATE (D1/PR#41) bleibt: kein Production-Code vor Konsens. **Design-only.**
+**Status:** **ACCEPTED** (2026-05-31). Status-Flip PROPOSAL → ACCEPTED nach einstimmigem Konsens.
+**Konsens:** 3-Runden-Review (rethink → revise → approve), einstimmig **FREIGEBEN** 2026-05-31. Erfüllt **D1-HARD-GATE** (C1 / 3-Reviewer-Konsens). Review-Dateien: `20260531_151001`, `20260531_164522`, `20260531_180419`. **Enforcement-Code ab Merge dieses Addendums unblocked** — Implementierung gemäß Implementation-Contract (unten) + Sicherheits-Sprint-Regeln.
 **Supersedes:** `docs/decisions/ADR-D3-mandate-enforcement-v2.md` (v2) — v2 bleibt als **Audit-Trail** erhalten, NICHT löschen. (Kette: v1 → v2 → v3, alle erhalten.)
 **Datum:** 2026-05-31 · **Autor:** Lars Kroehl
 **Review-Basis:**
@@ -64,4 +65,21 @@ ALLOW: zwingend verankern wenn `max_transaction_value` involviert (im Batch), so
 ## Konsequenzen
 - Positiv: alle 5 v1-Criticals + 4 v2-Restlücken + D-4 adressiert; nur noch konkrete Wert-Bestätigung offen.
 - Risiko/Offen: M-of-N-Parteien-Benennung + Key-Rotation (Implementierungs-Vertrag); Sharding als Follow-up; Harald-Infra-Dep (Egress-Proxy).
-- HARD GATE bleibt: kein Code bis C1-Konsens über v3.
+- HARD GATE **ERFÜLLT** (3-Reviewer-Konsens, einstimmig FREIGEBEN 2026-05-31). Enforcement-Code ab Merge unblocked.
+
+## Implementation-Contract (approve-with-nits, vor/während Code zu lösen)
+Von den Reviewern als nicht-design-blockierende Follow-ups bestätigt; verbindliche Checkliste für die Implementierung:
+- [ ] **SSRF-Blocklist ergänzen:** `100.64.0.0/10` (CGNAT, RFC 6598) + `255.255.255.255/32` (Broadcast) zur IPv4-Blocklist.
+- [ ] **SSRF-Validation-Order fixieren:** `resolve → check (aufgelöste IP vs. Blocklist) → connect zu exakt geprüfter IP`. KEIN Re-Resolve nach dem Check (sonst DNS-Rebinding).
+- [ ] **Circuit-Breaker open → MUSS DENY (fail-closed)** — explizit; niemals fail-open/ALLOW bei offenem CB.
+- [ ] **Active Cache-Invalidation** (Redis Pub/Sub o.ä.) zum sofortigen Override der 5min-TTL bei Revocation von **high-value** Mandates (insb. `max_transaction_value`).
+- [ ] **Replay-Schutz** (Nonces/Timestamps) im **M-of-N-Signatur-Payload** der Mode-Transitions — gültige `enforce → none`-Signatur darf nicht wiederholt einspielbar sein.
+- [ ] **Monitor/Alert auf failed mode-transitions** (abgelehnte M-of-N-Signaturen = Kompromittierungs-Indikator); **Salt-Store ACL + Mindest-Batch-Größe** für D-4.
+- [ ] **M-of-N-Party-Assignment + Key-Rotation-Policy** — Governance-Entscheidung (Lars / Bernd / Harald): wer hält die N Keys, Rotations-/Recovery-Verfahren.
+- [ ] **Harald-Egress-Proxy-Infra** abstimmen (mögliche Cloud-Run-Proxy-Überschneidung) bevor revocation_check live geht.
+- [ ] **Sharding/Multi-Primary** bleibt deferred (single-primary-Postgres-Annahme gilt) — eigener Follow-up wenn nötig.
+
+## Sicherheits-Sprint-Regeln für die Implementierung (verbindlich)
+- **KEIN Single-LLM-Session** für diesen security-kritischen Code (Multi-Model bzw. unabhängiger Review-Pass).
+- **Pre-Commit-Diff-Verify** vor jedem Commit (Diff manuell gegen Intent prüfen).
+- **Jede Komponente eigener PR** (aae_envelopes-Store / Evaluator / enforce-mode-State-Machine / revocation_check getrennt) — kein Big-Bang-Merge.
