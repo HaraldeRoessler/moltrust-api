@@ -161,3 +161,47 @@ def test_correct_augment_then_sign_verifies():
     }
     signed_post = sign_agent_card(augmented_first)
     assert _verify_signed_card(signed_post) is True
+
+
+# ---------------------------------------------------------------------------
+# 7. Middleware regression — scrub_secrets must NOT mutate JWS signature
+#    fields. Goes through the full request pipeline (TestClient), unlike the
+#    pure-unit tests above. Caught the 2026-05-31 root cause: the
+#    `content_filter_middleware` rewrote every response JSON via
+#    `scrub_secrets`, and the SENSITIVE_PATTERNS matched the base64 JWS
+#    signature, replacing the middle of it with the literal `[REDACTED]`.
+#    Once `protected` + `signature` joined `_KNOWN_PUBLIC_CREDENTIAL_FIELDS`,
+#    the field values pass through unchanged.
+# ---------------------------------------------------------------------------
+
+async def test_signature_field_passes_through_middleware(
+    async_client, credit_test_agent,
+):
+    """The signed `/extendedAgentCard` response must reach the consumer
+    without `scrub_secrets` mutating the base64 signature or the
+    base64 protected header. Any `[REDACTED]` in either field — or any
+    length other than the b64url-encoded 64-byte Ed25519 sig — is a
+    middleware drift, not a code bug in `sign_agent_card`."""
+    import base64
+
+    _, api_key = await credit_test_agent(balance=1)
+    r = await async_client.get(
+        "/extendedAgentCard", headers={"X-API-Key": api_key},
+    )
+    assert r.status_code == 200, r.text
+    card = r.json()
+    assert card.get("signatures"), "response carries no signatures field"
+    sig = card["signatures"][0]
+
+    assert "[REDACTED]" not in sig["signature"], (
+        "scrub_secrets corrupted the signature value. Add 'signature' to "
+        "_KNOWN_PUBLIC_CREDENTIAL_FIELDS."
+    )
+    assert "[REDACTED]" not in sig["protected"], (
+        "scrub_secrets corrupted the protected header. Add 'protected' to "
+        "_KNOWN_PUBLIC_CREDENTIAL_FIELDS."
+    )
+    raw = base64.urlsafe_b64decode(sig["signature"] + "=" * (-len(sig["signature"]) % 4))
+    assert len(raw) == 64, (
+        f"Ed25519 signature must be 64 bytes; got {len(raw)} — middleware drift"
+    )
