@@ -332,8 +332,21 @@ SENSITIVE_PATTERNS = [
 # SENSITIVE_PATTERNS would otherwise eat legitimate signed-credential
 # fields like `registry_jws` (the trust-score response carries a
 # compact JWS by design; it is not a leaked token).
+#
+# `protected` and `signature` are the A2A v1.0.1 `AgentCardSignature`
+# fields (base64url JWS protected header + raw Ed25519 sig); both look
+# like long random base64 strings to SENSITIVE_PATTERNS. They are
+# inherently public — anyone with our JWK at /.well-known/registry-key.json
+# can recompute them — and MUST NOT be redacted, otherwise external
+# verifiers reject the card. Discovered 2026-05-31: scrub_secrets was
+# silently turning every signed `/extendedAgentCard` into an unverifiable
+# card by replacing the middle of the signature with the literal text
+# `[REDACTED]`. The unit tests didn't catch this because they call
+# `sign_agent_card` directly, bypassing the HTTP middleware chain.
 _KNOWN_PUBLIC_CREDENTIAL_FIELDS = frozenset({
     "registry_jws",
+    "protected",
+    "signature",
 })
 
 def scrub_secrets(obj, _key=None):
