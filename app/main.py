@@ -3707,18 +3707,19 @@ async def credits_deposit_info(request: Request):
     }
 
 
-# Helper: lazy-load + cache public agent card.
-# Card is signed at first-load with the registry Ed25519 key and the
-# signed copy is what gets cached and served. Cache invalidates on
-# `systemctl restart moltstack.service` — same lifecycle as the
-# webroot edit flow.
+# Helper: lazy-load + cache the UNSIGNED public agent card.
+# `/extendedAgentCard` signs the *augmented* copy at request time —
+# caching a signature here would be wrong because the endpoint adds
+# dynamic MoltGuard + endorsement skills after load. PR #99 signed at
+# load time, which produced a signature that covered the 5-skills /
+# 6-extensions static body but the response actually carried 7/8 →
+# external verify failed (covered by the new integration test below).
 _AGENT_CARD_CACHE = None
 def _load_public_agent_card():
     global _AGENT_CARD_CACHE
     if _AGENT_CARD_CACHE is None:
-        from app.signature import sign_agent_card
         with open("/var/www/html/.well-known/agent-card.json", "r") as f:
-            _AGENT_CARD_CACHE = sign_agent_card(json.load(f))
+            _AGENT_CARD_CACHE = json.load(f)
     return _AGENT_CARD_CACHE
 
 
@@ -3779,7 +3780,11 @@ async def extended_agent_card(
         },
     }
 
-    return extended_card
+    # Sign AFTER augmentation — the signature must cover what the
+    # consumer actually receives. Ed25519 + JCS is ~tens of μs; well
+    # within the endpoint's 60/min rate budget.
+    from app.signature import sign_agent_card
+    return sign_agent_card(extended_card)
 
 
 @app.get("/a2a/agent-card/{did}")
