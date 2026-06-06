@@ -66,6 +66,10 @@ def extract_meta(html_path):
         if m:
             date_str = m.group(1)
     if not date_str:
+        m = re.search(r'<meta\s+itemprop="datePublished"\s+content="([^"]*)"', content)
+        if m:
+            date_str = m.group(1)
+    if not date_str:
         # Fallback to file mtime
         date_str = datetime.fromtimestamp(os.path.getmtime(html_path)).strftime("%Y-%m-%d")
 
