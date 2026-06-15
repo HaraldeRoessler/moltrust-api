@@ -586,6 +586,15 @@ async def credit_middleware(request: Request, call_next):
         balance = await _get_balance(conn, caller_did)
 
     if balance < cost:
+        try:
+            async with db_pool.acquire() as _c:
+                await _c.execute(
+                    "INSERT INTO insufficient_credit_events (did, cost, balance, endpoint) "
+                    "VALUES ($1, $2, $3, $4)",
+                    caller_did, cost, balance, path[:200],
+                )
+        except Exception:
+            pass
         return JSONResponse(
             status_code=402,
             content={
@@ -661,6 +670,15 @@ async def credit_middleware(request: Request, call_next):
             )
 
         if deduct_failed:
+            try:
+                async with db_pool.acquire() as _c:
+                    await _c.execute(
+                        "INSERT INTO insufficient_credit_events (did, cost, balance, endpoint) "
+                        "VALUES ($1, $2, $3, $4)",
+                        caller_did, cost, None, path[:200],
+                    )
+            except Exception:
+                pass
             return JSONResponse(
                 status_code=402,
                 content={
@@ -6585,6 +6603,10 @@ async def dashboard_overview(request: Request):
         x402_calls = await conn.fetchval(
             "SELECT COUNT(*) FROM x402_verify_calls WHERE called_at > NOW() - INTERVAL '24 hours'"
         )
+        rate_limited = await conn.fetchrow(
+            "SELECT COUNT(*) AS events, COUNT(DISTINCT did) AS agents "
+            "FROM insufficient_credit_events WHERE ts > NOW() - INTERVAL '12 hours'"
+        )
         total_payments = await conn.fetchval("SELECT COUNT(*) FROM payment_events")
         total_usdc = await conn.fetchval(
             "SELECT COALESCE(SUM(amount_usdc), 0) FROM payment_events"
@@ -6648,6 +6670,10 @@ async def dashboard_overview(request: Request):
             "verify_calls_24h": x402_calls,
             "total_payments": total_payments,
             "volume_usdc": float(total_usdc),
+        },
+        "rate_limited": {
+            "insufficient_credit_402_12h": rate_limited["events"],
+            "agents_12h": rate_limited["agents"],
         },
         "credits": {
             "total_balance": float(credit_balance),
