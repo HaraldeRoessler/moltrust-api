@@ -53,11 +53,18 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Limits ───────────────────────────────────────────────────────────────────
 INPUT_CHAR_LIMIT = 60000       # gpt-5 + gemini-3.1-pro-preview: beide Pro-Tier mit großem Kontextfenster — 60k chars is safe
-OPENAI_MAX_TOKENS = 4000       # v1 was 2000 — truncated long reviews
+OPENAI_MAX_TOKENS = 16000      # gpt-5 ist ein Reasoning-Modell: Reasoning-Tokens zählen gegen max_completion_tokens.
+                               # Bei 4000 fraß das Reasoning das ganze Budget → message.content war "" trotz 200 OK.
+                               # 16000 + reasoning_effort="low" lässt genug Output-Budget für den eigentlichen Review.
+OPENAI_REASONING_EFFORT = "low"  # Reasoning-Budget niedrig halten, damit Output-Tokens übrig bleiben
 GEMINI_MAX_TOKENS = 16000      # Tier-Wechsel Flash→Pro (gemini-3.1-pro-preview); doppelter Headroom für vollständige Reviews
 PERPLEXITY_MAX_TOKENS = 4000
 MISTRAL_MAX_TOKENS = 4000      # nur im eu-compliance-Modus aktiv (4. Reviewer)
 CLAUDE_MAX_TOKENS = 4000       # v1 was 3000 — more room for 3-reviewer synthesis
+
+# Synthese-Modell NICHT hartkodieren: env/secrets mit aktuellem Default. Ein retiretes Modell
+# (z.B. claude-sonnet-4-20250514 → 404) muss laut scheitern, nicht still degradieren.
+SYNTHESIS_MODEL = os.environ.get("SYNTHESIS_MODEL") or SECRETS.get("SYNTHESIS_MODEL") or "claude-sonnet-4-6"
 
 # ── Review-Prompts je Modus ──────────────────────────────────────────────────
 EU_COMPLIANCE_PROMPT = """Du bist ein unabhängiger EU-Regulatory-Compliance-Reviewer für dezentrale KI- und Identitäts-Infrastruktur.
@@ -115,6 +122,26 @@ Strukturiere deine Antwort exakt so:
 
 Konstruktiv aber direkt.""",
 
+    "product": """Du bist ein erfahrener Product-/Pricing-Reviewer für Developer-Tools und API-Infrastruktur.
+Du kennst die Pricing- und Informationsarchitektur-Muster von Stripe, Vercel, Twilio, Linear,
+Clerk/Auth0, Cloudflare. Du bewertest AUSSCHLIESSLICH: Struktur, Informationsarchitektur,
+Free-Tier-/Credit-Modell-Darstellung, Wording/Verständlichkeit und Developer-Onboarding-Friktion.
+NICHT zu bewerten: die nominale Preishöhe (gesetzt), keine Standards-/Citation-Prüfung, keine
+Protokoll-/W3C-Aspekte. Leitfrage: Wie präsentiert man dieses Pricing so, dass Adoption im
+Developer-/A2A-Umfeld maximal reibungsarm ist? Liefere konkrete, umsetzbare Empfehlungen und
+benenne Anti-Patterns aus vergleichbaren Dev-Tool-Pricings.
+
+Strukturiere deine Antwort exakt so:
+## 1. Eine Seite vs. mehrere — Empfehlung + Begründung (Developer-first)
+## 2. Informationsarchitektur / Sektionierung (inkl. Einstiegsseite, Slug-/Link-Achse falls Split)
+## 3. Free-Layer-Präsentation (Hook, Wording, Reihenfolge)
+## 4. Credit-Klammer — verbinden oder entkoppeln, und wie darstellen
+## 5. Subscription-Card-Komposition (was prominent, „Early Access"-Wording)
+## 6. Maschinenlesbarkeit (menschliche /pricing vs. /billing/plans · x402.json — gleiche Struktur?)
+## 7. Anti-Patterns aus vergleichbaren Dev-Tool-/Infra-Pricings
+
+Konkret und umsetzbar, keine Marketing-Sprache.""",
+
     "eu-compliance": EU_COMPLIANCE_PROMPT
 }
 
@@ -122,7 +149,8 @@ PERPLEXITY_EXTRA = {
     "security": "\n\nZusätzlich: Recherchiere aktuelle CVEs und bekannte Angriffsvektoren die für dieses System relevant sind. Prüfe ob die referenzierten Standards und Frameworks aktuell und korrekt zitiert sind.",
     "technical": "\n\nZusätzlich: Prüfe ob die referenzierten Standards (W3C, IETF, DIF) korrekt und aktuell zitiert sind. Recherchiere ob es neuere Versionen oder relevante Ergänzungen gibt.",
     "whitepaper": "\n\nZusätzlich: Prüfe ob alle zitierten Quellen existieren, korrekt zitiert sind, und ob es wichtige aktuelle Arbeiten gibt die fehlen. Recherchiere den aktuellen Stand der referenzierten Projekte und Frameworks.",
-    "eu-compliance": "\n\nZusätzlich: Recherchiere den aktuellen Stand von EU AI Act, DSGVO-Leitlinien (EDPB), eIDAS 2.0 / EUDI-Wallet-Spezifikationen und NIS2-Umsetzung. Prüfe ob zitierte Rechtsakte, Artikel und Fristen korrekt und aktuell sind, und ob relevante Delegated/Implementing Acts oder Guidelines fehlen."
+    "eu-compliance": "\n\nZusätzlich: Recherchiere den aktuellen Stand von EU AI Act, DSGVO-Leitlinien (EDPB), eIDAS 2.0 / EUDI-Wallet-Spezifikationen und NIS2-Umsetzung. Prüfe ob zitierte Rechtsakte, Artikel und Fristen korrekt und aktuell sind, und ob relevante Delegated/Implementing Acts oder Guidelines fehlen.",
+    "product": "\n\nZusätzlich: Recherchiere, wie vergleichbare Developer-Tools / API-Infrastrukturen (z.B. Stripe, Vercel, Twilio, Cloudflare, Clerk/Auth0, OpenAI/Anthropic-API, usage-based/credit-Modelle) ihr Pricing strukturieren und präsentieren — Free-Tier-Darstellung, Credit-/Usage-Mechanik, eine Seite vs. mehrere, Self-Serve vs. Contact-Sales-Trennung. Leite konkrete, übertragbare Muster und Anti-Patterns ab. KEINE Standards-/Citation-Prüfung."
 }
 
 SYNTHESIS_PROMPT = """Du bist Lead-Reviewer bei MolTrust. Du hast Reviews von drei unabhängigen AI-Modellen zu demselben Dokument erhalten:
@@ -224,6 +252,17 @@ Mistral Review:
 
 # ── API Calls ────────────────────────────────────────────────────────────────
 
+def _finalize(model: str, content: str, tokens) -> dict:
+    """GUARD 1 (silent-empty): Ein konfigurierter Reviewer, der leeren/whitespace-only
+    Content liefert (z.B. Reasoning-Modell, dessen Output-Budget vom Reasoning aufgebraucht
+    wurde — 200 OK, aber message.content == ""), wird NICHT als Erfolg gewertet. Stattdessen
+    error=True + empty=True, damit run_pipeline WARN loggt und der Output-Header es ausweist."""
+    if not content or not str(content).strip():
+        return {"model": model, "content": "(kein Inhalt — Reviewer lieferte leere Antwort trotz API-200)",
+                "tokens": tokens, "error": True, "empty": True}
+    return {"model": model, "content": content, "tokens": tokens, "error": False}
+
+
 async def call_openai(client: httpx.AsyncClient, document: str, mode: str) -> dict:
     """GPT-5 Review Call"""
     if not OPENAI_KEY:
@@ -233,6 +272,7 @@ async def call_openai(client: httpx.AsyncClient, document: str, mode: str) -> di
     payload = {
         "model": "gpt-5",
         "max_completion_tokens": OPENAI_MAX_TOKENS,
+        "reasoning_effort": OPENAI_REASONING_EFFORT,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Hier ist das Dokument zur Review:\n\n{document}"}
@@ -250,7 +290,7 @@ async def call_openai(client: httpx.AsyncClient, document: str, mode: str) -> di
         data = resp.json()
         content = data["choices"][0]["message"]["content"]
         tokens = data.get("usage", {}).get("total_tokens", "?")
-        return {"model": "GPT-5", "content": content, "tokens": tokens, "error": False}
+        return _finalize("GPT-5", content, tokens)
     except Exception as e:
         return {"model": "GPT-5", "content": f"ERROR: {e}", "error": True}
 
@@ -283,7 +323,7 @@ async def call_gemini(client: httpx.AsyncClient, document: str, mode: str) -> di
             data = resp.json()
             content = data["candidates"][0]["content"]["parts"][0]["text"]
             tokens = data.get("usageMetadata", {}).get("totalTokenCount", "?")
-            return {"model": "Gemini 3.1 Pro Preview", "content": content, "tokens": tokens, "error": False}
+            return _finalize("Gemini 3.1 Pro Preview", content, tokens)
         except Exception as e:
             last_error = e
             if attempt < 2:
@@ -319,7 +359,7 @@ async def call_perplexity(client: httpx.AsyncClient, document: str, mode: str) -
         data = resp.json()
         content = data["choices"][0]["message"]["content"]
         tokens = data.get("usage", {}).get("total_tokens", "?")
-        return {"model": "Perplexity Sonar Pro", "content": content, "tokens": tokens, "error": False}
+        return _finalize("Perplexity Sonar Pro", content, tokens)
     except Exception as e:
         return {"model": "Perplexity Sonar Pro", "content": f"ERROR: {e}", "error": True}
 
@@ -351,7 +391,7 @@ async def call_mistral(client: httpx.AsyncClient, document: str, mode: str) -> d
         data = resp.json()
         content = data["choices"][0]["message"]["content"]
         tokens = data.get("usage", {}).get("total_tokens", "?")
-        return {"model": "Mistral Large", "content": content, "tokens": tokens, "error": False}
+        return _finalize("Mistral Large", content, tokens)
     except Exception as e:
         return {"model": "Mistral Large", "content": f"ERROR: {e}", "error": True}
 
@@ -385,7 +425,7 @@ async def call_claude_synthesis(client: httpx.AsyncClient, results: list, label:
         )
 
     payload = {
-        "model": "claude-sonnet-4-20250514",
+        "model": SYNTHESIS_MODEL,
         "max_tokens": CLAUDE_MAX_TOKENS,
         "messages": [{"role": "user", "content": user_prompt}]
     }
@@ -404,6 +444,15 @@ async def call_claude_synthesis(client: httpx.AsyncClient, results: list, label:
         resp.raise_for_status()
         data = resp.json()
         return data["content"][0]["text"]
+    except httpx.HTTPStatusError as e:
+        # GUARD 2: laut scheitern statt still degradieren. 404 = Modell (vermutlich) retired.
+        code = e.response.status_code
+        body = (e.response.text or "")[:300]
+        if code == 404:
+            return (f"ERROR Synthesis: HTTP 404 — Synthese-Modell '{SYNTHESIS_MODEL}' nicht gefunden "
+                    f"(vermutlich retired). SYNTHESIS_MODEL env/secret auf ein aktuelles Modell setzen. "
+                    f"API-Body: {body}")
+        return f"ERROR Synthesis: HTTP {code} bei Modell '{SYNTHESIS_MODEL}' — {body}"
     except Exception as e:
         return f"ERROR Synthesis: {e}"
 
@@ -429,6 +478,7 @@ REVIEWERS_BY_MODE = {
     "security":      [call_openai, call_gemini, call_perplexity],
     "technical":     [call_openai, call_gemini, call_perplexity],
     "whitepaper":    [call_openai, call_gemini, call_perplexity],
+    "product":       [call_openai, call_gemini, call_perplexity],
     "eu-compliance": [call_openai, call_gemini, call_perplexity, call_mistral],
 }
 
@@ -472,7 +522,12 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
         results = await asyncio.gather(*tasks)
 
         for r in results:
-            print(f"   {r['model']:<22}: {'✅' if not r['error'] else '❌'} ({r.get('tokens', '?')} Tokens)")
+            if r.get("empty"):
+                print(f"   {r['model']:<22}: ⚠️  FAILED — kein Inhalt (leere Antwort trotz API-200), als Fehler gewertet")
+            elif r["error"]:
+                print(f"   {r['model']:<22}: ❌ ({r.get('tokens', '?')} Tokens)")
+            else:
+                print(f"   {r['model']:<22}: ✅ ({r.get('tokens', '?')} Tokens)")
 
         # 2. Synthesis via Claude
         print("\n🧠 Synthetisiere via Claude...")
@@ -490,6 +545,16 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
         output_path = OUTPUT_DIR / f"{ts}_{safe_label}_review.md"
 
         reviewer_line = " + ".join(r["model"] for r in results)
+
+        def _status(r):
+            if r.get("empty"):
+                return "⚠️ no content (FAILED — leere Antwort trotz API-200)"
+            if r["error"]:
+                return "❌ error"
+            return "✅ ok"
+        reviewer_status_lines = "\n".join(f"- {r['model']}: {_status(r)}" for r in results)
+        any_reviewer_failed = any(r["error"] for r in results)
+
         raw_blocks = "\n\n".join(
             f"<details>\n<summary>{r['model']} Raw Review</summary>\n\n{r['content']}\n\n</details>"
             for r in results
@@ -499,7 +564,11 @@ async def run_pipeline(doc_path: Path, label: str, mode: str, context: str = "")
 **Generiert:** {datetime.datetime.now().strftime("%Y-%m-%d %H:%M UTC")}
 **Quelle:** {doc_path.name}
 **Modus:** {mode}
-**Reviewer:** {reviewer_line} → Claude Synthesis
+**Reviewer:** {reviewer_line} → Claude Synthesis ({SYNTHESIS_MODEL})
+
+**Reviewer-Status:**
+{reviewer_status_lines}
+{"" if not any_reviewer_failed else chr(10) + "> ⚠️ Mindestens ein Reviewer hat KEINEN Inhalt geliefert — Synthese basiert auf einem reduzierten Panel."}
 
 ---
 
@@ -545,8 +614,8 @@ def main():
     parser = argparse.ArgumentParser(description="MolTrust Multi-AI Review Pipeline v2")
     parser.add_argument("document", help="Pfad zum MD-Dokument")
     parser.add_argument("--label", default="", help="Bezeichnung für den Review")
-    parser.add_argument("--mode", choices=["security", "technical", "whitepaper", "eu-compliance"],
-                        default="technical", help="Review-Modus (default: technical). eu-compliance fügt Mistral als 4. Reviewer hinzu.")
+    parser.add_argument("--mode", choices=["security", "technical", "whitepaper", "product", "eu-compliance"],
+                        default="technical", help="Review-Modus (default: technical). product = Pricing-/Product-IA-Review (3 Reviewer). eu-compliance fügt Mistral als 4. Reviewer hinzu.")
     parser.add_argument("--context", default="", help="Pfad zu Kontext-Datei (vorherige Reviews etc.)")
     args = parser.parse_args()
 
