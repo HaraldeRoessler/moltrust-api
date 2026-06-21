@@ -3,10 +3,11 @@
 Each spec relevant to MolTrust gets its own `.md` file here. Memory holds only a reference pointer (see Memory #30).
 
 Files:
-- `aae.md` — AAE (draft-kroehl-agentic-trust-aae-00)
+- `aae.md` — AAE (draft-kroehl-agentic-trust-aae-00) ✅ VERIFIED
+- `aps.md` — APS (source: `draft-pidlisnyi-aps-01` + Zenodo papers) ⚠️ STUB UNVERIFIED
 
 Planned (as needed):
-- `aps.md`, `x402.md`, `action-ref.md`, `erc-8004.md`, `w3c-vc.md`, `w3c-did.md`
+- `x402.md`, `action-ref.md`, `erc-8004.md`, `w3c-vc.md`, `w3c-did.md`
 
 ## Workflow
 
