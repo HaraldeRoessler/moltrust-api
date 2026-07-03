@@ -171,7 +171,6 @@ def dual_sign(credential: dict, ed25519_key) -> dict:
         "canonicalizationAlgorithm": "JCS",
     }
 
-    dil_sig = dilithium.sign  # resolve once; may be None
     dilithium_configured = dilithium.is_available()
 
     # The skeleton both legs will sign: all intended proofs, proofValue blank.
@@ -220,17 +219,48 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
       * Legacy (sort_keys, no skeleton) credentials verify over the body
         only, preserving backward compatibility.
 
+    Input validation: malformed credentials (non-dict, missing proof, wrong
+    types) are returned as {"valid": False, "error": ...} rather than raising,
+    so a malformed input cannot trigger a 500-error DoS.
+
     Returns: {"valid": bool, "checks": [{"type","valid"[,"error"]}], "error"?}
     """
+    # --- Input validation ---
+    if not isinstance(credential, dict):
+        return {"valid": False, "error": "credential is not a dict"}
+    if not isinstance(ed25519_verify_key, object):
+        return {"valid": False, "error": "ed25519_verify_key is invalid"}
+
     proofs = get_proofs(credential)
     if not proofs:
         return {"valid": False, "error": "No proof found"}
 
-    use_skeleton = _has_skeleton(proofs)
     results = {"valid": True, "checks": []}
 
     for p in proofs:
+        if not isinstance(p, dict):
+            results["checks"].append({
+                "type": str(type(p).__name__),
+                "valid": False,
+                "error": "proof entry is not a dict",
+            })
+            results["valid"] = False
+            continue
+
         ptype = p.get("type", "")
+        ptype_str = ptype if isinstance(ptype, str) else ""
+
+        # Cross-check verificationMethod against the key being used to verify.
+        # Defense-in-depth: a valid signature over a valid body is not enough
+        # if the proof claims to be from a key we are not using.
+        vm = p.get("verificationMethod", "")
+        if not isinstance(vm, str) or not vm:
+            results["checks"].append({
+                "type": ptype_str, "valid": False,
+                "error": "missing or invalid verificationMethod",
+            })
+            results["valid"] = False
+            continue
 
         # Re-derive the signed payload. JCS proofs require the jcs library;
         # legacy proofs fall back to sort_keys. A JCS-labelled proof with no
@@ -238,18 +268,41 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
         try:
             payload = _signed_payload(credential, p, proofs)
         except RuntimeError as e:
-            results["checks"].append({"type": ptype, "valid": False, "error": str(e)})
+            results["checks"].append({"type": ptype_str, "valid": False, "error": str(e)})
             results["valid"] = False
             continue
 
+        # Validate proofValue is a hex string of the correct length.
+        pv = p.get("proofValue", "")
+        if not isinstance(pv, str) or not pv:
+            results["checks"].append({
+                "type": ptype_str, "valid": False,
+                "error": "missing or non-string proofValue",
+            })
+            results["valid"] = False
+            continue
         try:
-            signature = bytes.fromhex(p["proofValue"])
-        except (ValueError, KeyError) as e:
-            results["checks"].append({"type": ptype, "valid": False, "error": f"bad proofValue: {e}"})
+            signature = bytes.fromhex(pv)
+        except ValueError as e:
+            results["checks"].append({
+                "type": ptype_str, "valid": False,
+                "error": f"proofValue is not valid hex: {e}",
+            })
             results["valid"] = False
             continue
 
-        if ED25519_PROOF_TYPE in ptype or "Ed25519" in ptype:
+        # Exact-match dispatch (not substring) to prevent type confusion.
+        # "EvilEd25519NotReally" must NOT be treated as Ed25519.
+        if ptype_str == ED25519_PROOF_TYPE:
+            if not vm.startswith(f"{ISSUER_DID}#key-ed25519") and \
+               not vm.startswith(f"{ISSUER_DID}#key-1"):
+                results["checks"].append({
+                    "type": "Ed25519", "valid": False,
+                    "error": f"Ed25519 proof verificationMethod does not "
+                             f"match an issuer Ed25519 key: {vm}",
+                })
+                results["valid"] = False
+                continue
             try:
                 ed25519_verify_key.verify(payload, signature)
                 results["checks"].append({"type": "Ed25519", "valid": True})
@@ -257,7 +310,15 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
                 results["checks"].append({"type": "Ed25519", "valid": False, "error": str(e)})
                 results["valid"] = False
 
-        elif DILITHIUM_PROOF_TYPE in ptype or "Dilithium" in ptype:
+        elif ptype_str == DILITHIUM_PROOF_TYPE:
+            if not vm.startswith(f"{ISSUER_DID}#key-dilithium"):
+                results["checks"].append({
+                    "type": "Dilithium", "valid": False,
+                    "error": f"Dilithium proof verificationMethod does not "
+                             f"match the issuer Dilithium key: {vm}",
+                })
+                results["valid"] = False
+                continue
             pk_hex = dilithium.get_public_key_hex()
             if not pk_hex:
                 results["checks"].append({
@@ -273,15 +334,11 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
                     results["valid"] = False
         else:
             results["checks"].append({
-                "type": ptype, "valid": False,
-                "error": f"Unknown proof type: {ptype}",
+                "type": ptype_str, "valid": False,
+                "error": f"Unknown proof type: {ptype_str!r}",
             })
             results["valid"] = False
 
-    # With skeleton binding, a stripped leg shows up as Ed25519 failing
-    # (its signature was over a skeleton that included Dilithium). Without a
-    # skeleton (legacy), there was only ever one leg, so nothing to strip.
-    # Either way the per-proof checks above already set results["valid"].
     if not results["valid"]:
         errors = [c.get("error", "check failed")
                   for c in results["checks"] if not c.get("valid")]

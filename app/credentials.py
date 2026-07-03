@@ -60,16 +60,29 @@ def issue_credential(subject_did: str, credential_type: str, claims: dict) -> di
 
 
 def verify_credential(credential: dict) -> dict:
+    # Input validation: malformed inputs must not raise (would cause 500).
+    if not isinstance(credential, dict):
+        return {"valid": False, "error": "credential is not a dict"}
+
     proof = credential.get("proof")
     if not proof:
         return {"valid": False, "error": "No proof found"}
 
+    # Normalize proof to a list for uniform handling.
+    if isinstance(proof, list):
+        proofs = proof
+    elif isinstance(proof, dict):
+        proofs = [proof]
+    else:
+        return {"valid": False, "error": "proof is not a dict or list"}
+
     # Every proof's verificationMethod must belong to our issuer.
-    proofs = proof if isinstance(proof, list) else [proof]
     for p in proofs:
-        vm = p.get("verificationMethod", "")
-        if not vm.startswith(ISSUER_DID):
-            return {"valid": False, "error": f"Unknown verification method: {vm}"}
+        if not isinstance(p, dict):
+            return {"valid": False, "error": "proof entry is not a dict"}
+        vm = p.get("verificationMethod")
+        if not isinstance(vm, str) or not vm.startswith(ISSUER_DID):
+            return {"valid": False, "error": f"Unknown verification method: {vm!r}"}
 
     try:
         signing_key = get_signing_key()

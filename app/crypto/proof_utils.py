@@ -19,7 +19,12 @@ DILITHIUM_PROOF_TYPE = "DilithiumSignature2026"
 
 
 def _as_proof_list(proof) -> list[dict]:
-    """Normalise the `proof` field into a list of proof dicts."""
+    """Normalise the `proof` field into a list of proof dicts.
+
+    Non-dict/non-list inputs (string, int, None, etc.) yield an empty list
+    so downstream code can treat a malformed proof as "no valid proofs"
+    rather than raising.
+    """
     if proof is None:
         return []
     if isinstance(proof, list):
@@ -30,18 +35,27 @@ def _as_proof_list(proof) -> list[dict]:
 
 
 def get_proofs(credential: dict) -> list[dict]:
-    """Return all proof dicts from a credential (handles single/list/missing)."""
+    """Return all proof dicts from a credential (handles single/list/missing).
+
+    Non-dict credentials yield an empty list rather than raising.
+    """
+    if not isinstance(credential, dict):
+        return []
     return _as_proof_list(credential.get("proof"))
 
 
 def find_proof(credential: dict, proof_type: str) -> Optional[dict]:
     """Return the first proof whose `type` matches, or None.
 
-    Matches by substring of the declared type so e.g. "Ed25519" also works
-    for variants like "Ed25519Signature2020".
+    Matches by exact equality with proof_type, or by proof_type being a
+    substring of the declared type. This keeps it usable for legitimate
+    W3C type variants like "Ed25519Signature2020" while preventing
+    accidental type-confusion on exotic strings.
     """
     for p in get_proofs(credential):
         ptype = p.get("type", "")
+        if not isinstance(ptype, str):
+            continue
         if ptype == proof_type or proof_type in ptype:
             return p
     return None
@@ -71,10 +85,14 @@ def get_primary_proof_value(credential: dict) -> str:
     """
     ed = get_ed25519_proof(credential)
     if ed is not None and "proofValue" in ed:
-        return ed["proofValue"]
+        pv = ed["proofValue"]
+        if isinstance(pv, str):
+            return pv
     proofs = get_proofs(credential)
     if proofs and "proofValue" in proofs[0]:
-        return proofs[0]["proofValue"]
+        pv = proofs[0]["proofValue"]
+        if isinstance(pv, str):
+            return pv
     raise KeyError("credential has no proofValue to persist")
 
 
