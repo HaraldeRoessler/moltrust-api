@@ -33,20 +33,23 @@ def stub_oqs():
     if "oqs" not in sys.modules:
         sys.modules["oqs"] = types.ModuleType("oqs")
 
-    # Reload crypto modules so the stub is picked up
-    import app.crypto.dilithium as dilithium
-    importlib.reload(dilithium)
-    from app.crypto import hybrid
-    importlib.reload(hybrid)
-    from app.crypto import proof_utils
-    importlib.reload(proof_utils)
-
-    # Clean any leftover Dilithium env vars
+    # Clean any leftover Dilithium env vars before reloading
     for k in ("DILITHIUM_PRIVATE_KEY_HEX", "DILITHIUM_PUBLIC_KEY_HEX",
               "DILITHIUM_PRIVATE_KEY_ENCRYPTED", "DILITHIUM_ENV_DUMMY"):
         os.environ.pop(k, None)
     # Unset production gate
     os.environ.pop("MOLTRUST_ENV", None)
+
+    # Reload crypto modules so the stub is picked up
+    import app.crypto.dilithium as dilithium
+    importlib.reload(dilithium)
+    import app.crypto.hybrid as hybrid_mod
+    importlib.reload(hybrid_mod)
+    import app.crypto.proof_utils as proof_utils_mod
+    importlib.reload(proof_utils_mod)
+    # Reload credentials too so it picks up the reloaded hybrid
+    import app.credentials as credentials_mod
+    importlib.reload(credentials_mod)
 
     yield
 
