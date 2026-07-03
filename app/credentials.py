@@ -4,10 +4,16 @@ Issuance: emits W3C VC Data Model v2 only (validFrom/validUntil, v2 @context).
 Verification: dual-accept — recognises v2 (validFrom/validUntil) AND legacy
 v1 (issuanceDate/expirationDate) so previously-issued credentials still
 verify until the dataset is fully rotated.
+
+Signing: dual-signature (Ed25519 + ML-DSA-65/Dilithium3) when Dilithium keys
+are configured, Ed25519-only otherwise. JCS (RFC 8785) canonicalization.
+See app/crypto/hybrid.py for the composite-signature verification contract.
 """
 import os, json, datetime, hashlib
 from nacl.signing import SigningKey
 from app.crypto.kms_signer import get_decrypted_signing_key_hex
+from app.crypto.hybrid import dual_sign, verify_proof
+from app.crypto.proof_utils import get_ed25519_proof
 
 ISSUER_DID = "did:web:api.moltrust.ch"
 
@@ -49,16 +55,7 @@ def issue_credential(subject_did: str, credential_type: str, claims: dict) -> di
     }
 
     signing_key = get_signing_key()
-    payload = json.dumps(credential, sort_keys=True).encode()
-    signed = signing_key.sign(payload)
-
-    credential["proof"] = {
-        "type": "Ed25519Signature2020",
-        "created": now.isoformat() + "Z",
-        "verificationMethod": f"{ISSUER_DID}#key-1",
-        "proofPurpose": "assertionMethod",
-        "proofValue": signed.signature.hex(),
-    }
+    credential = dual_sign(credential, signing_key)
     return credential
 
 
@@ -66,17 +63,24 @@ def verify_credential(credential: dict) -> dict:
     proof = credential.get("proof")
     if not proof:
         return {"valid": False, "error": "No proof found"}
-    if proof.get("verificationMethod") != f"{ISSUER_DID}#key-1":
-        return {"valid": False, "error": "Unknown verification method"}
+
+    # Every proof's verificationMethod must belong to our issuer.
+    proofs = proof if isinstance(proof, list) else [proof]
+    for p in proofs:
+        vm = p.get("verificationMethod", "")
+        if not vm.startswith(ISSUER_DID):
+            return {"valid": False, "error": f"Unknown verification method: {vm}"}
 
     try:
-        cred_copy = {k: v for k, v in credential.items() if k != "proof"}
-        payload = json.dumps(cred_copy, sort_keys=True).encode()
-        signature = bytes.fromhex(proof["proofValue"])
-
         signing_key = get_signing_key()
         verify_key = signing_key.verify_key
-        verify_key.verify(payload, signature)
+
+        result = verify_proof(credential, verify_key)
+        if not result["valid"]:
+            errors = [c.get("error", "check failed")
+                      for c in result.get("checks", []) if not c.get("valid")]
+            return {"valid": False, "error": "; ".join(errors),
+                    "checks": result.get("checks", [])}
 
         exp = vc_valid_until(credential)
         if exp:
@@ -84,6 +88,11 @@ def verify_credential(credential: dict) -> dict:
             if datetime.datetime.utcnow() > exp_dt:
                 return {"valid": False, "error": "Credential expired"}
 
-        return {"valid": True, "issuer": credential["issuer"], "subject": credential["credentialSubject"]["id"]}
+        return {
+            "valid": True,
+            "issuer": credential["issuer"],
+            "subject": credential["credentialSubject"]["id"],
+            "checks": result.get("checks", []),
+        }
     except Exception as e:
         return {"valid": False, "error": str(e)}
