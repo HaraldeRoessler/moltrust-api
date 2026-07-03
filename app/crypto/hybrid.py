@@ -3,16 +3,19 @@ Hybrid (dual) signature module for MolTrust.
 
 Issues credentials with both an Ed25519 and an ML-DSA-65 (Dilithium3) proof
 when Dilithium keys are configured, and Ed25519-only otherwise. Verification
-enforces the security contract the review required:
+enforces the composite-signature contract the review required (IETF
+composite-sigs, BSI TR-02102-1):
 
-  * A credential issued with a *list* of proofs MUST present every listed
-    proof and every listed proof MUST verify. This is AND-logic, not OR:
-    an attacker cannot strip the Dilithium leg and rely on Ed25519 alone,
-    because the verifier rejects a proof set whose declared legs are not all
-    present and valid (composite-signature semantics, BSI TR-02102-1).
-  * The canonicalized payload excludes the `proof` field (a proof must not
-    sign itself); both legs sign the same canonical bytes so tampering with
-    the credential body invalidates both.
+  * The signed payload is the credential body PLUS the proof skeleton —
+    i.e. every proof dict with its `proofValue` stripped. Binding the proof
+    structure into the signed bytes means an attacker CANNOT strip a leg
+    after the fact: removing the Dilithium proof changes the skeleton, which
+    invalidates the Ed25519 signature too. This is the fix for the review's
+    downgrade/stripping blocker.
+  * Every proof in the credential MUST be present and MUST verify. There is
+    no OR-downgrade path: a credential from a PQC-enabled issuer that is
+    missing its Dilithium leg is invalid, because the surviving Ed25519
+    signature was made over a skeleton that included the Dilithium proof.
 
 Canonicalization is RFC 8785 JCS. If the `jcs` library is not importable at
 sign time we FAIL CLOSED (raise) rather than emit a proof whose
@@ -22,8 +25,12 @@ false-negative vector in the review.
 
 Legacy credentials (single Ed25519 proof, no canonicalizationAlgorithm, or
 canonicalizationAlgorithm other than JCS) still verify with the original
-`json.dumps(sort_keys=True)` path so already-issued VCs remain valid.
+`json.dumps(sort_keys=True)` path so already-issued VCs remain valid. Those
+legacy credentials sign the body WITHOUT the proof field (the original
+behaviour) and carry no skeleton, so they are not protected against leg
+stripping — but they only ever had one leg, so there was nothing to strip.
 """
+import copy
 import json
 import logging
 
@@ -38,9 +45,14 @@ logger = logging.getLogger("moltrust.crypto.hybrid")
 
 ISSUER_DID = "did:web:api.moltrust.ch"
 
+# Marker used in the proof skeleton (the placeholder for the real proofValue)
+# while signing. The actual signatures are computed over the canonical bytes
+# of the credential with proofValue set to this sentinel, then replaced.
+_PROOF_VALUE_SENTINEL = ""
 
-def _canonicalize(credential_without_proof: dict, algorithm: str) -> bytes:
-    """Canonicalize the credential body (proof already stripped).
+
+def _canonicalize(payload: dict, algorithm: str) -> bytes:
+    """Canonicalize `payload` per `algorithm`. Fail closed for JCS without jcs.
 
     `algorithm` is the value that will be written into the proof's
     `canonicalizationAlgorithm` field. We refuse to emit a JCS-labelled
@@ -54,11 +66,11 @@ def _canonicalize(credential_without_proof: dict, algorithm: str) -> bytes:
                 "canonicalizationAlgorithm=JCS but the jcs library is not "
                 "installed; refusing to emit a mismatched proof"
             ) from e
-        return jcs.canonicalize(credential_without_proof)
+        return jcs.canonicalize(payload)
 
     # Legacy path — used only for verifying old credentials.
     if algorithm in (None, "", "JSON-SORT-KEYS"):
-        return json.dumps(credential_without_proof, sort_keys=True).encode()
+        return json.dumps(payload, sort_keys=True).encode()
 
     raise ValueError(f"Unsupported canonicalizationAlgorithm: {algorithm!r}")
 
@@ -72,8 +84,59 @@ def _proof_algorithm(proof: dict) -> str:
     return proof.get("canonicalizationAlgorithm") or "JSON-SORT-KEYS"
 
 
+def _has_skeleton(proofs: list[dict]) -> bool:
+    """True iff these proofs were produced with the skeleton-binding scheme.
+
+    New (JCS) proofs bind the proof skeleton into the signed payload; legacy
+    (sort_keys, no canonicalizationAlgorithm) proofs do not. We detect the
+    difference by the presence of `canonicalizationAlgorithm == "JCS"`.
+    """
+    return any(_proof_algorithm(p) == "JCS" for p in proofs)
+
+
+def _build_skeleton(credential: dict, proofs: list[dict]) -> dict:
+    """Return a credential copy with `proof` = proofs minus their proofValue.
+
+    This is the structure both legs sign. Stripping proofValue (not the whole
+    proof) means the signature binds the proof *metadata* (type,
+    verificationMethod, created, canonicalizationAlgorithm) without the
+    signature having to sign itself. An attacker who removes or alters a
+    proof changes this skeleton and invalidates every remaining signature.
+    """
+    skeleton_proofs = []
+    for p in proofs:
+        sp = {k: v for k, v in p.items() if k != "proofValue"}
+        sp["proofValue"] = _PROOF_VALUE_SENTINEL
+        skeleton_proofs.append(sp)
+    skeleton = copy.deepcopy(credential)
+    skeleton["proof"] = skeleton_proofs if len(skeleton_proofs) != 1 else skeleton_proofs[0]
+    return skeleton
+
+
+def _signed_payload(credential: dict, proof: dict, all_proofs: list[dict]) -> bytes:
+    """Compute the bytes a given proof's signature must cover.
+
+    - JCS (new) proofs: the canonicalized credential WITH the proof skeleton
+      (all proofs present, proofValue blanked). This binds every leg into
+      every signature.
+    - Legacy (sort_keys) proofs: the canonicalized credential WITHOUT the
+      proof field — the original behaviour, so already-issued VCs verify.
+    """
+    algo = _proof_algorithm(proof)
+    if algo == "JCS":
+        skeleton = _build_skeleton(credential, all_proofs)
+        return _canonicalize(skeleton, "JCS")
+    # Legacy: body only, no proof field.
+    body = {k: v for k, v in credential.items() if k != "proof"}
+    return _canonicalize(body, algo)
+
+
 def dual_sign(credential: dict, ed25519_key) -> dict:
     """Sign a credential with Ed25519 and, if configured, ML-DSA-65.
+
+    Both legs sign the credential body PLUS the proof skeleton (the proofs
+    with proofValue blanked), so the proof structure is bound into every
+    signature. Stripping a leg after issuance breaks the remaining signatures.
 
     Args:
         credential: the VC dict without a `proof` field.
@@ -86,43 +149,58 @@ def dual_sign(credential: dict, ed25519_key) -> dict:
     Raises:
         RuntimeError if JCS is required but the jcs library is missing.
     """
-    # The proof signs the credential body WITHOUT the proof field.
-    body = {k: v for k, v in credential.items() if k != "proof"}
-
-    # New credentials always use JCS. Fail closed if jcs is not installed.
-    payload = _canonicalize(body, "JCS")
-
     now_str = (
         credential.get("validFrom")
         or credential.get("issuanceDate")
         or ""
     )
 
-    ed_signed = ed25519_key.sign(payload)
-    ed_proof = {
+    # Build the proof metadata first (no proofValue yet).
+    ed_meta = {
         "type": ED25519_PROOF_TYPE,
         "created": now_str,
         "verificationMethod": f"{ISSUER_DID}#key-ed25519",
         "proofPurpose": "assertionMethod",
         "canonicalizationAlgorithm": "JCS",
-        "proofValue": ed_signed.signature.hex(),
     }
-
-    dil_sig = dilithium.sign(payload)
-    if dil_sig is None:
-        credential["proof"] = ed_proof
-        logger.debug("Credential signed Ed25519-only (Dilithium not configured)")
-        return credential
-
-    dil_proof = {
+    dil_meta = {
         "type": DILITHIUM_PROOF_TYPE,
         "created": now_str,
         "verificationMethod": f"{ISSUER_DID}#key-dilithium",
         "proofPurpose": "assertionMethod",
         "canonicalizationAlgorithm": "JCS",
-        "proofValue": dil_sig.hex(),
     }
-    credential["proof"] = [ed_proof, dil_proof]
+
+    dil_sig = dilithium.sign  # resolve once; may be None
+    dilithium_configured = dilithium.is_available()
+
+    # The skeleton both legs will sign: all intended proofs, proofValue blank.
+    intended_proofs = [ed_meta, dil_meta] if dilithium_configured else [ed_meta]
+    skeleton = _build_skeleton(credential, intended_proofs)
+    payload = _canonicalize(skeleton, "JCS")
+
+    # Ed25519 leg.
+    ed_signed = ed25519_key.sign(payload)
+    ed_meta["proofValue"] = ed_signed.signature.hex()
+
+    if not dilithium_configured:
+        credential["proof"] = ed_meta
+        logger.debug("Credential signed Ed25519-only (Dilithium not configured)")
+        return credential
+
+    # Dilithium leg — signs the SAME payload (same skeleton) as Ed25519.
+    dil_sig_bytes = dilithium.sign(payload)
+    if dil_sig_bytes is None:
+        # Configured but signing failed: do NOT fall back silently to a
+        # single-proof credential, because that would re-open the downgrade
+        # path (an attacker can't tell a deliberate Ed25519-only cred from a
+        # failed-dual one). Fail the issuance instead.
+        raise RuntimeError("Dilithium configured but signing failed; refusing "
+                           "to emit an Ed25519-only credential from a "
+                           "PQC-enabled issuer")
+    dil_meta["proofValue"] = dil_sig_bytes.hex()
+
+    credential["proof"] = [ed_meta, dil_meta]
     logger.info("Credential dual-signed (Ed25519 + ML-DSA-65)")
     return credential
 
@@ -132,11 +210,15 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
 
     Contract (fixes the review's downgrade/stripping blocker):
 
-      * If `proof` is a list, EVERY proof in the list MUST be present and
-        MUST verify. A missing leg (e.g. attacker strips Dilithium) makes
-        the whole credential invalid. This is AND-logic.
-      * Each proof signs the credential body (proof field stripped),
-        re-canonicalized with that proof's declared algorithm.
+      * For JCS (new) credentials, each proof signs the credential body PLUS
+        the proof skeleton (all proofs present, proofValue blanked). If a
+        leg is missing, the skeleton the issuer signed differs from the
+        skeleton the verifier reconstructs, so EVERY remaining signature
+        fails. An attacker cannot strip a leg and keep a valid Ed25519.
+      * Every proof present MUST verify (AND-logic). One bad leg fails the
+        whole credential.
+      * Legacy (sort_keys, no skeleton) credentials verify over the body
+        only, preserving backward compatibility.
 
     Returns: {"valid": bool, "checks": [{"type","valid"[,"error"]}], "error"?}
     """
@@ -144,18 +226,17 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
     if not proofs:
         return {"valid": False, "error": "No proof found"}
 
-    body = {k: v for k, v in credential.items() if k != "proof"}
+    use_skeleton = _has_skeleton(proofs)
     results = {"valid": True, "checks": []}
 
     for p in proofs:
         ptype = p.get("type", "")
-        algo = _proof_algorithm(p)
 
         # Re-derive the signed payload. JCS proofs require the jcs library;
         # legacy proofs fall back to sort_keys. A JCS-labelled proof with no
         # jcs library is a hard fail (the issuer could not have produced it).
         try:
-            payload = _canonicalize(body, algo)
+            payload = _signed_payload(credential, p, proofs)
         except RuntimeError as e:
             results["checks"].append({"type": ptype, "valid": False, "error": str(e)})
             results["valid"] = False
@@ -197,6 +278,10 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
             })
             results["valid"] = False
 
+    # With skeleton binding, a stripped leg shows up as Ed25519 failing
+    # (its signature was over a skeleton that included Dilithium). Without a
+    # skeleton (legacy), there was only ever one leg, so nothing to strip.
+    # Either way the per-proof checks above already set results["valid"].
     if not results["valid"]:
         errors = [c.get("error", "check failed")
                   for c in results["checks"] if not c.get("valid")]

@@ -6,23 +6,26 @@ Usage:
     python scripts/generate_dilithium_keys.py [--out-dir DIR] [--kms]
 
 Security (fixes the review's private-key stdout-leak blocker):
-    The secret key is NEVER printed to stdout/stderr. It is written only to a
-    chmod 600 file `dilithium_secret_key.hex` in the chosen output directory
-    (default: the current directory). The public key IS printed to stdout
-    (it is not secret) and also written to `dilithium_public_key.hex`.
+    The secret key is NEVER printed to stdout/stderr — not the hex form and
+    not the base64/raw-bytes form. It is written only to chmod 600 files in
+    the chosen output directory (default: the current directory):
 
-    With --kms, the script instead prints the base64 of the raw secret-key
-    bytes so it can be piped straight into `aws kms encrypt` — but it still
-    does not print the hex secret key. The recommended flow is:
+      - dilithium_secret_key.hex   (hex, always)
+      - dilithium_secret_key.kms.b64 (base64 raw bytes, only with --kms)
+
+    The PUBLIC key is printed to stdout (it is not secret) and also written
+    to dilithium_public_key.hex.
+
+    Recommended flow:
 
         python scripts/generate_dilithium_keys.py --out-dir /secure/keys
-        # then encrypt /secure/keys/dilithium_secret_key.hex into KMS and
-        # delete the plaintext file once the KMS blob is stored:
+        # encrypt the KMS-ready base64 straight into KMS:
         aws kms encrypt --key-id $KMS_KEY_ID \
-            --plaintext fileb:///secure/keys/dilithium_secret_key.hex \
+            --plaintext fileb:///secure/keys/dilithium_secret_key.kms.b64 \
             --output text --query CiphertextBlob \
             > /secure/keys/dilithium_private_key.encrypted
-        shred -u /secure/keys/dilithium_secret_key.hex
+        shred -u /secure/keys/dilithium_secret_key.hex \
+                  /secure/keys/dilithium_secret_key.kms.b64
 
 Exit codes: 0 on success, 1 on a dependency/setup error.
 """
@@ -56,9 +59,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--kms", action="store_true",
-        help="emit the raw secret-key bytes (base64) to stdout for piping "
-             "into `aws kms encrypt`; the hex secret key is still written to a "
-             "chmod 600 file as a fallback",
+        help="also write the raw secret-key bytes (base64) to a chmod 600 "
+             "file dilithium_secret_key.kms.b64 for piping into "
+             "`aws kms encrypt --plaintext fileb://...`; the secret key is "
+             "NEVER written to stdout",
     )
     args = parser.parse_args()
 
@@ -100,8 +104,12 @@ def main() -> int:
     print("", file=sys.stderr)
     if args.kms:
         import base64
-        # Raw bytes for `aws kms encrypt` piping. Not the hex secret.
-        print(base64.b64encode(secret_key).decode("ascii"))
+        # Write base64 raw bytes to a chmod 600 file (NOT stdout) so it can be
+        # fed to `aws kms encrypt --plaintext fileb://...`. The secret key
+        # never touches stdout/stderr.
+        kms_path = os.path.join(out_dir, "dilithium_secret_key.kms.b64")
+        _write_secret_file(kms_path, base64.b64encode(secret_key).decode("ascii"))
+        print(f"KMS-ready base64 written to: {kms_path} (chmod 600)", file=sys.stderr)
     print(
         "IMPORTANT: encrypt dilithium_secret_key.hex into AWS KMS and shred "
         "the plaintext file. Never commit it to version control.",
