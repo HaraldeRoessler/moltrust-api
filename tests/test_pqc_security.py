@@ -106,7 +106,32 @@ class TestDowngradeAttack:
         result = hybrid.verify_proof(attack, ed25519_key.verify_key)
         assert result["valid"] is False, (
             "DOWNGRADE ATTACK: stripping Dilithium leg must invalidate "
-            "the Ed25519 signature (skeleton binding)"
+            "the credential (PQC policy + skeleton binding)"
+        )
+
+    def test_strip_dilithium_breaks_ed25519_signature(self, ed25519_key, sample_credential):
+        """Skeleton binding: stripping Dilithium changes the skeleton, so the
+        Ed25519 signature itself breaks — independent of the PQC policy."""
+        from app.crypto import hybrid
+        _setup_pqc(available=True)
+
+        dual = hybrid.dual_sign(dict(sample_credential), ed25519_key)
+        attack = copy.deepcopy(dual)
+        attack["proof"] = dual["proof"][0]  # strip Dilithium
+
+        # Verify with PQC OFF so the policy check doesn't short-circuit;
+        # the Ed25519 signature must still fail because the skeleton changed.
+        _setup_pqc(available=False)
+        result = hybrid.verify_proof(attack, ed25519_key.verify_key)
+        assert result["valid"] is False, (
+            "Skeleton binding: stripping Dilithium must break the Ed25519 "
+            "signature even without PQC policy enforcement"
+        )
+        # The Ed25519 check itself must report invalid (not just "no proof")
+        ed_check = [c for c in result.get("checks", []) if c.get("type") == "Ed25519"]
+        assert ed_check, "Ed25519 check must be present"
+        assert ed_check[0]["valid"] is False, (
+            "Ed25519 signature must be invalid after skeleton change"
         )
 
     def test_swap_proof_order_rejected(self, ed25519_key, sample_credential):
@@ -521,3 +546,63 @@ class TestDilithiumKeyLoading:
         dilithium.clear_cache()
         os.environ.pop("DILITHIUM_PUBLIC_KEY_HEX", None)
         os.environ.pop("DILITHIUM_PRIVATE_KEY_HEX", None)
+
+
+# ===========================================================================
+# PQC verify-policy: PQC-capable issuer must dual-sign JCS credentials
+# ===========================================================================
+
+class TestPQCVerifyPolicy:
+    """The 3-model review's blocker: a PQC-capable issuer must not be able to
+    emit Ed25519-only JCS credentials. The verify path must reject them."""
+
+    def test_pqc_issuer_ed25519_only_jcs_rejected(self, ed25519_key, sample_credential):
+        """PQC available + JCS credential + only Ed25519 proof → rejected."""
+        from app.crypto import hybrid
+        # Issue Ed25519-only (PQC not configured at sign time)
+        _setup_pqc(available=False)
+        ed_only = hybrid.dual_sign(dict(sample_credential), ed25519_key)
+        assert isinstance(ed_only["proof"], dict)  # single proof
+
+        # Now verifier has PQC configured
+        _setup_pqc(available=True, dil_verify=True)
+        result = hybrid.verify_proof(ed_only, ed25519_key.verify_key)
+        assert result["valid"] is False
+        assert "PQC policy" in result["error"]
+
+    def test_pqc_issuer_dual_signed_accepted(self, ed25519_key, sample_credential):
+        """PQC available + JCS credential + dual proof → accepted."""
+        from app.crypto import hybrid
+        _setup_pqc(available=True, dil_verify=True)
+        dual = hybrid.dual_sign(dict(sample_credential), ed25519_key)
+        assert isinstance(dual["proof"], list)
+
+        result = hybrid.verify_proof(dual, ed25519_key.verify_key)
+        assert result["valid"] is True
+
+    def test_non_pqc_verifier_ed25519_only_jcs_accepted(self, ed25519_key, sample_credential):
+        """Non-PQC verifier accepts Ed25519-only JCS credential."""
+        from app.crypto import hybrid
+        _setup_pqc(available=False)
+        ed_only = hybrid.dual_sign(dict(sample_credential), ed25519_key)
+
+        # Verifier also has no PQC
+        _setup_pqc(available=False)
+        result = hybrid.verify_proof(ed_only, ed25519_key.verify_key)
+        assert result["valid"] is True
+
+    def test_pqc_verifier_legacy_sort_keys_exempt(self, ed25519_key, sample_credential):
+        """PQC verifier accepts legacy (non-JCS) Ed25519-only credentials."""
+        from app.crypto import hybrid
+        _setup_pqc(available=True, dil_verify=True)
+
+        legacy = dict(sample_credential)
+        sig = ed25519_key.sign(json.dumps(legacy, sort_keys=True).encode()).signature
+        legacy["proof"] = {
+            "type": "Ed25519Signature2020",
+            "verificationMethod": "did:web:api.moltrust.ch#key-1",
+            "proofPurpose": "assertionMethod",
+            "proofValue": sig.hex(),
+        }
+        result = hybrid.verify_proof(legacy, ed25519_key.verify_key)
+        assert result["valid"] is True

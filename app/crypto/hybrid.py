@@ -16,6 +16,21 @@ composite-sigs, BSI TR-02102-1):
     no OR-downgrade path: a credential from a PQC-enabled issuer that is
     missing its Dilithium leg is invalid, because the surviving Ed25519
     signature was made over a skeleton that included the Dilithium proof.
+  * PQC POLICY (3-model review blocker fix): when the verifier has Dilithium
+    configured (PQC-capable) AND the credential uses JCS (new format), the
+    credential MUST carry a dual signature. An Ed25519-only JCS credential
+    is a policy downgrade — the issuer *could* have dual-signed but didn't.
+    Legacy (sort_keys, no canonicalizationAlgorithm) credentials are exempt:
+    they predate the PQC policy and only ever had one leg.
+
+Threat model:
+  - Phase-1 migration: legacy Ed25519-only credentials (sort_keys, no JCS)
+    remain valid until the dataset is fully rotated. These are NOT subject
+    to the dual-signature policy.
+  - Strict policy: any JCS credential from a PQC-capable issuer must be
+    dual-signed. This is enforced at verify time, not just at sign time
+    (sign time already enforces it via the fail-closed RuntimeError when
+    Dilithium signing fails).
 
 Canonicalization is RFC 8785 JCS. If the `jcs` library is not importable at
 sign time we FAIL CLOSED (raise) rather than emit a proof whose
@@ -39,6 +54,7 @@ from app.crypto.proof_utils import (
     ED25519_PROOF_TYPE,
     DILITHIUM_PROOF_TYPE,
     get_proofs,
+    has_dual_signature,
 )
 
 logger = logging.getLogger("moltrust.crypto.hybrid")
@@ -242,6 +258,23 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
     proofs = get_proofs(credential)
     if not proofs:
         return {"valid": False, "error": "No proof found"}
+
+    # --- PQC policy enforcement (3-model review blocker fix) ---
+    # If the verifier is PQC-capable (Dilithium configured) AND the credential
+    # uses the new JCS format, then it MUST carry a dual signature. An
+    # Ed25519-only JCS credential from a PQC-capable issuer is a policy
+    # downgrade: the issuer *could* have dual-signed but didn't.
+    #
+    # Legacy credentials (no canonicalizationAlgorithm or JSON-SORT-KEYS)
+    # are exempt — they predate the PQC policy and only ever had one leg.
+    if dilithium.is_available() and _has_skeleton(proofs):
+        if not has_dual_signature(credential):
+            return {
+                "valid": False,
+                "error": "PQC policy violation: JCS credential from PQC-capable "
+                         "issuer must carry a dual signature (Ed25519 + "
+                         "Dilithium), but only an Ed25519 proof is present",
+            }
 
     results = {"valid": True, "checks": []}
 
