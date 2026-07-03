@@ -78,6 +78,7 @@ def _setup_pqc(available=True, dil_sig=b"FAKE_DIL_SIG_3309_bytes__" + b"\x00" * 
     """Configure dilithium stubs. dil_sig must be > 0 bytes."""
     from app.crypto import dilithium
     dilithium.is_available = lambda: available
+    dilithium.public_key_configured = lambda: bool(dil_pk) if available else False
     dilithium.sign = lambda p: dil_sig if available else None
     dilithium.get_public_key_hex = lambda: dil_pk if available else None
     dilithium.verify = lambda p, s, pk: dil_verify
@@ -606,3 +607,59 @@ class TestPQCVerifyPolicy:
         }
         result = hybrid.verify_proof(legacy, ed25519_key.verify_key)
         assert result["valid"] is True
+
+    def test_policy_fires_when_public_key_configured_but_kms_down(self, ed25519_key, sample_credential):
+        """Policy fires on public key config alone, independent of is_available().
+
+        Scenario: the Dilithium public key is configured (issuer is PQC-capable)
+        but the secret key / KMS is temporarily unavailable. The policy must
+        still fire — the issuer is PQC-capable by declaration, and accepting
+        Ed25519-only JCS credentials would be a policy downgrade.
+        """
+        from app.crypto import hybrid
+        from app.crypto import dilithium
+
+        # Issue an Ed25519-only JCS credential
+        _setup_pqc(available=False)
+        ed_only = hybrid.dual_sign(dict(sample_credential), ed25519_key)
+
+        # Simulate "KMS down" — is_available() returns False, but the public
+        # key is still configured (issuer is PQC-capable by declaration).
+        dilithium.is_available = lambda: False
+        dilithium.public_key_configured = lambda: True
+
+        result = hybrid.verify_proof(ed_only, ed25519_key.verify_key)
+        assert result["valid"] is False
+        assert "PQC policy" in result["error"]
+
+
+# ===========================================================================
+# dilithium.public_key_configured() — standalone env-var check
+# ===========================================================================
+
+class TestPublicKeyConfigured:
+    """public_key_configured() must reflect the env var, not the full keypair."""
+
+    def test_no_env_var_returns_false(self):
+        from app.crypto import dilithium
+        dilithium.clear_cache()
+        os.environ.pop("DILITHIUM_PUBLIC_KEY_HEX", None)
+        assert dilithium.public_key_configured() is False
+
+    def test_env_var_set_returns_true(self):
+        from app.crypto import dilithium
+        dilithium.clear_cache()
+        os.environ["DILITHIUM_PUBLIC_KEY_HEX"] = "aa" * 32
+        try:
+            assert dilithium.public_key_configured() is True
+        finally:
+            os.environ.pop("DILITHIUM_PUBLIC_KEY_HEX", None)
+
+    def test_empty_env_var_returns_false(self):
+        from app.crypto import dilithium
+        dilithium.clear_cache()
+        os.environ["DILITHIUM_PUBLIC_KEY_HEX"] = "   "
+        try:
+            assert dilithium.public_key_configured() is False
+        finally:
+            os.environ.pop("DILITHIUM_PUBLIC_KEY_HEX", None)

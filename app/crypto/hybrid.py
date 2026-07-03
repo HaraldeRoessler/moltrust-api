@@ -260,14 +260,19 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
         return {"valid": False, "error": "No proof found"}
 
     # --- PQC policy enforcement (3-model review blocker fix) ---
-    # If the verifier is PQC-capable (Dilithium configured) AND the credential
-    # uses the new JCS format, then it MUST carry a dual signature. An
-    # Ed25519-only JCS credential from a PQC-capable issuer is a policy
+    # If the issuer is PQC-capable (Dilithium public key configured) AND the
+    # credential uses the new JCS format, then it MUST carry a dual signature.
+    # An Ed25519-only JCS credential from a PQC-capable issuer is a policy
     # downgrade: the issuer *could* have dual-signed but didn't.
+    #
+    # Trigger: `dilithium.public_key_configured()` — true whenever the public
+    # key env var is set, independent of KMS/secret-key availability. This
+    # ensures the policy fires whenever the issuer has declared PQC support,
+    # not only when the full keypair is loadable right now.
     #
     # Legacy credentials (no canonicalizationAlgorithm or JSON-SORT-KEYS)
     # are exempt — they predate the PQC policy and only ever had one leg.
-    if dilithium.is_available() and _has_skeleton(proofs):
+    if dilithium.public_key_configured() and _has_skeleton(proofs):
         if not has_dual_signature(credential):
             return {
                 "valid": False,

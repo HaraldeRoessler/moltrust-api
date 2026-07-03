@@ -104,6 +104,18 @@ def is_available() -> bool:
     return _load_keypair() is not None
 
 
+def public_key_configured() -> bool:
+    """True iff the Dilithium public key is configured (env var set).
+
+    Used by the verify policy to determine whether the issuer is PQC-capable.
+    Does NOT require the private key (which is only needed for signing) or
+    even a working liboqs install — the policy fires whenever the issuer has
+    declared a PQC key, independent of KMS availability. Verification of the
+    Dilithium leg itself still depends on liboqs being importable.
+    """
+    return bool(os.environ.get("DILITHIUM_PUBLIC_KEY_HEX", "").strip())
+
+
 def sign(payload: bytes) -> bytes | None:
     """Sign payload with ML-DSA-65. Returns signature bytes or None.
 
