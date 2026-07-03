@@ -3564,7 +3564,7 @@ async def register_batch(request: Request):
 
 # --- Verifiable Credentials ---
 from app.credentials import issue_credential, verify_credential, vc_valid_from, vc_valid_until
-from app.crypto.proof_utils import get_primary_proof_value, get_ed25519_proof
+from app.crypto.proof_utils import get_primary_proof_value
 from app.ipfs_publisher import publish_to_ipfs, get_ipfs_url
 
 class IssueVCRequest(BaseModel):

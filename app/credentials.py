@@ -13,7 +13,6 @@ import os, json, datetime, hashlib
 from nacl.signing import SigningKey
 from app.crypto.kms_signer import get_decrypted_signing_key_hex
 from app.crypto.hybrid import dual_sign, verify_proof
-from app.crypto.proof_utils import get_ed25519_proof
 
 ISSUER_DID = "did:web:api.moltrust.ch"
 

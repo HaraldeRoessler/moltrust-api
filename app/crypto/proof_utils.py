@@ -45,18 +45,17 @@ def get_proofs(credential: dict) -> list[dict]:
 
 
 def find_proof(credential: dict, proof_type: str) -> Optional[dict]:
-    """Return the first proof whose `type` matches, or None.
+    """Return the first proof whose `type` matches exactly, or None.
 
-    Matches by exact equality with proof_type, or by proof_type being a
-    substring of the declared type. This keeps it usable for legitimate
-    W3C type variants like "Ed25519Signature2020" while preventing
-    accidental type-confusion on exotic strings.
+    Exact equality only. Substring matching was removed because it is a
+    latent type-confusion bug: a declared type like "EvilEd25519NotReally"
+    would match a caller searching for "Ed25519Signature2020".
     """
     for p in get_proofs(credential):
         ptype = p.get("type", "")
         if not isinstance(ptype, str):
             continue
-        if ptype == proof_type or proof_type in ptype:
+        if ptype == proof_type:
             return p
     return None
 

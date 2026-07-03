@@ -346,6 +346,57 @@ class TestTypeConfusion:
 
 
 # ===========================================================================
+# verificationMethod binding (defense-in-depth)
+# ===========================================================================
+
+class TestVerificationMethodBinding:
+    """verificationMethod must be one of the exact allowed key ids."""
+
+    @pytest.fixture
+    def valid_cred(self, ed25519_key, sample_credential):
+        from app.crypto import hybrid
+        _setup_pqc(available=False)
+        return hybrid.dual_sign(dict(sample_credential), ed25519_key)
+
+    @pytest.mark.parametrize("bad_vm", [
+        "did:web:api.moltrust.ch#key-ed25519-attacker",
+        "did:web:api.moltrust.ch#key-1-attacker",
+        "did:web:api.moltrust.ch#key-dilithium-attacker",
+        "did:web:api.moltrust.ch#key-ed25519xxxxx",
+    ])
+    def test_suffix_on_allowed_key_rejected(self, ed25519_key, valid_cred, bad_vm):
+        from app.crypto import hybrid
+        cred = copy.deepcopy(valid_cred)
+        cred["proof"]["verificationMethod"] = bad_vm
+        result = hybrid.verify_proof(cred, ed25519_key.verify_key)
+        assert result["valid"] is False, (
+            f"verificationMethod suffix/prefix attack must be rejected: {bad_vm}"
+        )
+
+    def test_exact_key_ed25519_works(self, ed25519_key, sample_credential):
+        from app.crypto import hybrid
+        _setup_pqc(available=False)
+        ed_only = hybrid.dual_sign(dict(sample_credential), ed25519_key)
+        assert ed_only["proof"]["verificationMethod"] == "did:web:api.moltrust.ch#key-ed25519"
+        result = hybrid.verify_proof(ed_only, ed25519_key.verify_key)
+        assert result["valid"] is True
+
+    def test_legacy_key_1_still_works(self, ed25519_key, sample_credential):
+        from app.crypto import hybrid
+        _setup_pqc(available=False)
+        legacy = dict(sample_credential)
+        sig = ed25519_key.sign(json.dumps(legacy, sort_keys=True).encode()).signature
+        legacy["proof"] = {
+            "type": "Ed25519Signature2020",
+            "verificationMethod": "did:web:api.moltrust.ch#key-1",
+            "proofPurpose": "assertionMethod",
+            "proofValue": sig.hex(),
+        }
+        result = hybrid.verify_proof(legacy, ed25519_key.verify_key)
+        assert result["valid"] is True
+
+
+# ===========================================================================
 # verify_credential wrapper (additional validation in credentials.py)
 # ===========================================================================
 
@@ -427,3 +478,16 @@ class TestProofUtils:
         from app.crypto.proof_utils import get_primary_proof_value
         with pytest.raises(KeyError):
             get_primary_proof_value(None)
+
+    def test_find_proof_exact_match_only(self):
+        from app.crypto.proof_utils import find_proof
+        cred = {"proof": [
+            {"type": "EvilEd25519NotReally"},
+            {"type": "Ed25519Signature2020"},
+        ]}
+        p = find_proof(cred, "Ed25519Signature2020")
+        assert p is not None
+        assert p["type"] == "Ed25519Signature2020"
+        # Substring of the declared type must NOT match.
+        p2 = find_proof(cred, "Ed25519")
+        assert p2 is None

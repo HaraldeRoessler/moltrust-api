@@ -45,6 +45,16 @@ logger = logging.getLogger("moltrust.crypto.hybrid")
 
 ISSUER_DID = "did:web:api.moltrust.ch"
 
+# Allowed verificationMethod ids per proof type. Exact equality only —
+# startswith is too permissive (e.g. #key-ed25519-attacker would match).
+ED25519_KEY_IDS = {
+    f"{ISSUER_DID}#key-ed25519",
+    f"{ISSUER_DID}#key-1",
+}
+DILITHIUM_KEY_IDS = {
+    f"{ISSUER_DID}#key-dilithium",
+}
+
 # Marker used in the proof skeleton (the placeholder for the real proofValue)
 # while signing. The actual signatures are computed over the canonical bytes
 # of the credential with proofValue set to this sentinel, then replaced.
@@ -228,8 +238,6 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
     # --- Input validation ---
     if not isinstance(credential, dict):
         return {"valid": False, "error": "credential is not a dict"}
-    if not isinstance(ed25519_verify_key, object):
-        return {"valid": False, "error": "ed25519_verify_key is invalid"}
 
     proofs = get_proofs(credential)
     if not proofs:
@@ -293,9 +301,14 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
 
         # Exact-match dispatch (not substring) to prevent type confusion.
         # "EvilEd25519NotReally" must NOT be treated as Ed25519.
+        #
+        # verificationMethod is also checked by exact equality against the
+        # allowed key ids. startswith would let an attacker append a suffix
+        # such as #key-ed25519-attacker and still pass this defense-in-depth
+        # check (they still cannot forge a signature without the key, but we
+        # keep the type field trustworthy).
         if ptype_str == ED25519_PROOF_TYPE:
-            if not vm.startswith(f"{ISSUER_DID}#key-ed25519") and \
-               not vm.startswith(f"{ISSUER_DID}#key-1"):
+            if vm not in ED25519_KEY_IDS:
                 results["checks"].append({
                     "type": "Ed25519", "valid": False,
                     "error": f"Ed25519 proof verificationMethod does not "
@@ -311,7 +324,7 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
                 results["valid"] = False
 
         elif ptype_str == DILITHIUM_PROOF_TYPE:
-            if not vm.startswith(f"{ISSUER_DID}#key-dilithium"):
+            if vm not in DILITHIUM_KEY_IDS:
                 results["checks"].append({
                     "type": "Dilithium", "valid": False,
                     "error": f"Dilithium proof verificationMethod does not "
