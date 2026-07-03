@@ -491,3 +491,33 @@ class TestProofUtils:
         # Substring of the declared type must NOT match.
         p2 = find_proof(cred, "Ed25519")
         assert p2 is None
+
+
+# ===========================================================================
+# Dilithium key loading robustness
+# ===========================================================================
+
+class TestDilithiumKeyLoading:
+    """Bad hex env vars must return None, not crash dual_sign."""
+
+    def test_bad_public_key_hex_returns_none(self):
+        from app.crypto import dilithium
+        dilithium.clear_cache()
+        os.environ["DILITHIUM_PUBLIC_KEY_HEX"] = "notvalidhex"
+        os.environ["DILITHIUM_PRIVATE_KEY_HEX"] = "aa" * 32
+        assert dilithium._load_keypair() is None
+        assert dilithium.is_available() is False
+        dilithium.clear_cache()
+        os.environ.pop("DILITHIUM_PUBLIC_KEY_HEX", None)
+        os.environ.pop("DILITHIUM_PRIVATE_KEY_HEX", None)
+
+    def test_bad_private_key_hex_returns_none(self):
+        from app.crypto import dilithium
+        dilithium.clear_cache()
+        os.environ["DILITHIUM_PUBLIC_KEY_HEX"] = "aa" * 32
+        os.environ["DILITHIUM_PRIVATE_KEY_HEX"] = "notvalidhex"
+        assert dilithium._load_keypair() is None
+        assert dilithium.is_available() is False
+        dilithium.clear_cache()
+        os.environ.pop("DILITHIUM_PUBLIC_KEY_HEX", None)
+        os.environ.pop("DILITHIUM_PRIVATE_KEY_HEX", None)

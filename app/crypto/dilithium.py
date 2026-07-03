@@ -86,7 +86,11 @@ def _load_keypair() -> tuple[bytes, bytes] | None:
         logger.error("DILITHIUM_PUBLIC_KEY_HEX set but no private key configured")
         return None
 
-    _cached_keypair = (bytes.fromhex(sk_hex), bytes.fromhex(pk_hex))
+    try:
+        _cached_keypair = (bytes.fromhex(sk_hex), bytes.fromhex(pk_hex))
+    except ValueError as e:
+        logger.error("Dilithium key hex parsing failed: %s", e)
+        return None
     _cache_expiry = now + _CACHE_TTL
     return _cached_keypair
 
