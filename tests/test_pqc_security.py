@@ -335,6 +335,15 @@ class TestInputValidation:
         result = hybrid.verify_proof(cred, ed25519_key.verify_key)
         assert result["valid"] is False
 
+    def test_very_long_proofvalue_rejected(self, ed25519_key, valid_cred):
+        """Multi-megabyte hex strings must be rejected before bytes.fromhex."""
+        from app.crypto import hybrid
+        cred = copy.deepcopy(valid_cred)
+        cred["proof"]["proofValue"] = "aa" * 50_000  # 100k hex chars
+        result = hybrid.verify_proof(cred, ed25519_key.verify_key)
+        assert result["valid"] is False
+        assert "too long" in result["checks"][0]["error"]
+
 
 # ===========================================================================
 # Type confusion (exact-match dispatch)
@@ -473,6 +482,29 @@ class TestVerifyCredentialWrapper:
         }
         result = verify_credential(legacy)
         assert result["valid"] is True
+
+    def test_verify_credential_preserves_policy_error(self, ed25519_key, sample_credential):
+        """verify_credential must not drop the explicit error from verify_proof."""
+        from app.credentials import verify_credential
+        from app.crypto import hybrid
+        # Issue Ed25519-only JCS credential
+        _setup_pqc(available=False)
+        ed_only = hybrid.dual_sign(dict(sample_credential), ed25519_key)
+
+        # Verify as PQC-capable issuer
+        _setup_pqc(available=True, dil_verify=True)
+        result = verify_credential(ed_only)
+        assert result["valid"] is False
+        assert result["error"], "error field must not be empty"
+        assert "PQC policy" in result["error"]
+
+    def test_verify_credential_preserves_early_error(self):
+        """verify_credential must preserve non-dict / no-proof errors too."""
+        from app.credentials import verify_credential
+        result = verify_credential(None)
+        assert result["valid"] is False
+        assert result["error"], "error field must not be empty"
+        assert "not a dict" in result["error"]
 
 
 # ===========================================================================

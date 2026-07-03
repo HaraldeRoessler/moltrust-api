@@ -71,6 +71,13 @@ DILITHIUM_KEY_IDS = {
     f"{ISSUER_DID}#key-dilithium",
 }
 
+# Maximum hex length we will accept for a proofValue. Ed25519 sig = 64 bytes
+# (128 hex chars); ML-DSA-65 sig = 3309 bytes (6618 hex chars). Allow a
+# generous margin for future algorithms, but cap to prevent memory-DoS from
+# a multi-megabyte hex string.
+_MAX_PROOFVALUE_HEX_LEN = 20000
+
+
 # Marker used in the proof skeleton (the placeholder for the real proofValue)
 # while signing. The actual signatures are computed over the canonical bytes
 # of the credential with proofValue set to this sentinel, then replaced.
@@ -313,17 +320,25 @@ def verify_proof(credential: dict, ed25519_verify_key) -> dict:
         # jcs library is a hard fail (the issuer could not have produced it).
         try:
             payload = _signed_payload(credential, p, proofs)
-        except RuntimeError as e:
+        except Exception as e:
             results["checks"].append({"type": ptype_str, "valid": False, "error": str(e)})
             results["valid"] = False
             continue
 
-        # Validate proofValue is a hex string of the correct length.
+        # Validate proofValue is a hex string of reasonable length.
         pv = p.get("proofValue", "")
         if not isinstance(pv, str) or not pv:
             results["checks"].append({
                 "type": ptype_str, "valid": False,
                 "error": "missing or non-string proofValue",
+            })
+            results["valid"] = False
+            continue
+        if len(pv) > _MAX_PROOFVALUE_HEX_LEN:
+            results["checks"].append({
+                "type": ptype_str, "valid": False,
+                "error": f"proofValue too long ({len(pv)} hex chars; max "
+                         f"{_MAX_PROOFVALUE_HEX_LEN})",
             })
             results["valid"] = False
             continue

@@ -89,9 +89,17 @@ def verify_credential(credential: dict) -> dict:
 
         result = verify_proof(credential, verify_key)
         if not result["valid"]:
-            errors = [c.get("error", "check failed")
-                      for c in result.get("checks", []) if not c.get("valid")]
-            return {"valid": False, "error": "; ".join(errors),
+            # verify_proof may set an explicit error (e.g. PQC policy violation,
+            # "No proof found", "credential is not a dict") without a checks
+            # array. Prefer that error; fall back to aggregating check errors.
+            if result.get("error"):
+                error = result["error"]
+            else:
+                error = "; ".join(
+                    c.get("error", "check failed")
+                    for c in result.get("checks", []) if not c.get("valid")
+                )
+            return {"valid": False, "error": error,
                     "checks": result.get("checks", [])}
 
         exp = vc_valid_until(credential)
